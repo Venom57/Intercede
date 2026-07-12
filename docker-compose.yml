@@ -11,6 +11,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://intercede:change-me@db/intercede
       SECRET_KEY: change-me-long-random
+      APP_ENV: production    # refuses to boot on the dev-default SECRET_KEY
       COOKIE_SECURE: "1"
       PUBLIC_BASE_URL: https://prayer.example.com
     depends_on: [db]

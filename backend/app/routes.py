@@ -6,7 +6,7 @@ import uuid
 
 import qrcode
 import qrcode.image.svg
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -14,9 +14,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import models as m
 from .deps import (
-    active_membership, clear_session_cookie, current_user, get_db,
-    hash_password, set_session_cookie, today, verify_password, visible_request_filter,
+    DUMMY_HASH,
+    active_membership,
+    clear_session_cookie,
+    current_user,
+    get_db,
+    hash_password,
+    set_session_cookie,
+    today,
+    verify_password,
+    visible_request_filter,
 )
+from .security import audit, rate_limit
 
 router = APIRouter()
 
@@ -34,24 +43,36 @@ class LoginIn(BaseModel):
 
 
 @router.post("/api/auth/register", status_code=201)
-async def register(body: RegisterIn, response: Response, db: AsyncSession = Depends(get_db)):
+async def register(body: RegisterIn, request: Request, response: Response,
+                   db: AsyncSession = Depends(get_db)):
+    rate_limit(request, "register")
     user = m.User(email=body.email.lower(), password_hash=hash_password(body.password),
                   display_name=body.display_name)
     db.add(user)
     try:
+        await db.flush()
+        audit(db, "auth.register", actor_id=user.id)
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(409, "An account with that email already exists")
+        raise HTTPException(409, "An account with that email already exists") from None
     set_session_cookie(response, user.id)
     return {"id": user.id, "display_name": user.display_name}
 
 
 @router.post("/api/auth/login")
-async def login(body: LoginIn, response: Response, db: AsyncSession = Depends(get_db)):
+async def login(body: LoginIn, request: Request, response: Response,
+                db: AsyncSession = Depends(get_db)):
+    rate_limit(request, "login")
     user = (await db.execute(select(m.User).where(m.User.email == body.email.lower()))).scalar_one_or_none()
-    if not user or not verify_password(body.password, user.password_hash):
+    ok = verify_password(body.password, user.password_hash if user else DUMMY_HASH)
+    if not user or not ok:
+        audit(db, "auth.login_failed", actor_id=user.id if user else None,
+              detail=body.email.lower()[:255])
+        await db.commit()
         raise HTTPException(401, "Email or password is incorrect")
+    audit(db, "auth.login", actor_id=user.id)
+    await db.commit()
     set_session_cookie(response, user.id)
     return {"id": user.id, "display_name": user.display_name}
 
@@ -193,23 +214,31 @@ async def patch_request(rid: str, body: RequestPatch, user: m.User = Depends(cur
     if data.get("status") == "answered":
         req.answered_at = m.utcnow()
         req.answer_note = data.pop("answer_note", None)
+    if "status" in data and data["status"] != req.status:
+        audit(db, "request.status_changed", group_id=req.group_id, actor_id=user.id,
+              target_id=req.id, detail=f"{req.status} -> {data['status']}")
     for k, v in data.items():
         setattr(req, k, v)
     await db.commit()
     return {"id": req.id, "status": req.status, "answered_at": req.answered_at}
 
 
-@router.post("/api/requests/{rid}/prayed")
-async def prayed(rid: str, user: m.User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+async def _visible_request(db: AsyncSession, rid: str, user: m.User) -> m.PrayerRequest:
+    """Load a request the user is allowed to see, else 404 (existence is not leaked)."""
     req = await db.get(m.PrayerRequest, rid)
     if not req or req.deleted_at:
         raise HTTPException(404, "Request not found")
     ms = await active_membership(db, req.group_id, user)
-    # must be able to *see* the request to pray for it
     vis = (await db.execute(select(m.PrayerRequest.id).where(
         m.PrayerRequest.id == rid, visible_request_filter(ms)))).first()
     if not vis:
         raise HTTPException(404, "Request not found")
+    return req
+
+
+@router.post("/api/requests/{rid}/prayed")
+async def prayed(rid: str, user: m.User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    await _visible_request(db, rid, user)
     db.add(m.PrayerAction(request_id=rid, user_id=user.id, prayed_on=today()))
     try:
         await db.commit()
@@ -225,14 +254,7 @@ async def prayed(rid: str, user: m.User = Depends(current_user), db: AsyncSessio
 @router.get("/api/requests/{rid}/verse")
 async def request_verse(rid: str, shuffle: bool = False,
                         user: m.User = Depends(current_user), db: AsyncSession = Depends(get_db)):
-    req = await db.get(m.PrayerRequest, rid)
-    if not req or req.deleted_at:
-        raise HTTPException(404, "Request not found")
-    ms = await active_membership(db, req.group_id, user)
-    vis = (await db.execute(select(m.PrayerRequest.id).where(
-        m.PrayerRequest.id == rid, visible_request_filter(ms)))).first()
-    if not vis:
-        raise HTTPException(404, "Request not found")
+    req = await _visible_request(db, rid, user)
     pack = (await db.execute(select(m.Verse).where(m.Verse.category_slug == req.category_slug)
                              .order_by(m.Verse.position))).scalars().all()
     if not pack:
@@ -242,6 +264,110 @@ async def request_verse(rid: str, shuffle: bool = False,
         await db.commit()
     v = pack[req.verse_index % len(pack)]
     return {"reference": v.reference, "text": v.text, "translation": v.translation}
+
+
+# ------------------------------------------------------------- updates ----
+
+class UpdateIn(BaseModel):
+    body: str = Field(min_length=1, max_length=4000)
+
+
+@router.post("/api/requests/{rid}/updates", status_code=201)
+async def add_update(rid: str, body: UpdateIn, user: m.User = Depends(current_user),
+                     db: AsyncSession = Depends(get_db)):
+    req = await _visible_request(db, rid, user)
+    ms = await active_membership(db, req.group_id, user)
+    if req.created_by != user.id and ms.role != "leader":
+        raise HTTPException(403, "Only the author or a leader can post updates")
+    upd = m.RequestUpdate(request_id=rid, author_id=user.id, body=body.body)
+    db.add(upd)
+    await db.commit()
+    return {"id": upd.id, "created_at": upd.created_at.isoformat()}
+
+
+@router.get("/api/requests/{rid}/updates")
+async def list_updates(rid: str, user: m.User = Depends(current_user),
+                       db: AsyncSession = Depends(get_db)):
+    await _visible_request(db, rid, user)
+    q = (select(m.RequestUpdate, m.User.display_name)
+         .join(m.User, m.User.id == m.RequestUpdate.author_id)
+         .where(m.RequestUpdate.request_id == rid)
+         .order_by(m.RequestUpdate.created_at))
+    rows = (await db.execute(q)).all()
+    return [{"id": u.id, "body": u.body, "author": name,
+             "created_at": u.created_at.isoformat()} for u, name in rows]
+
+
+# ------------------------------------------------------- soft deletion ----
+
+@router.delete("/api/requests/{rid}")
+async def delete_request(rid: str, user: m.User = Depends(current_user),
+                         db: AsyncSession = Depends(get_db)):
+    req = await db.get(m.PrayerRequest, rid)
+    if not req or req.deleted_at:
+        raise HTTPException(404, "Request not found")
+    ms = await active_membership(db, req.group_id, user)
+    if req.created_by != user.id and ms.role != "leader":
+        raise HTTPException(403, "Only the author or a leader can delete this request")
+    req.deleted_at = m.utcnow()
+    audit(db, "request.deleted", group_id=req.group_id, actor_id=user.id, target_id=rid)
+    await db.commit()
+    return {"ok": True}
+
+
+async def _soft_delete_subject_requests(db: AsyncSession, subject_type: str, subject_id: str):
+    reqs = (await db.execute(select(m.PrayerRequest).where(
+        m.PrayerRequest.subject_type == subject_type,
+        m.PrayerRequest.subject_id == subject_id,
+        m.PrayerRequest.deleted_at.is_(None)))).scalars().all()
+    for r in reqs:
+        r.deleted_at = m.utcnow()
+
+
+@router.delete("/api/families/{fid}")
+async def delete_family(fid: str, user: m.User = Depends(current_user),
+                        db: AsyncSession = Depends(get_db)):
+    fam = await db.get(m.Family, fid)
+    if not fam or fam.deleted_at:
+        raise HTTPException(404, "Family not found")
+    await active_membership(db, fam.group_id, user, roles=("leader",))
+    fam.deleted_at = m.utcnow()
+    members = (await db.execute(select(m.Member).where(
+        m.Member.family_id == fid, m.Member.deleted_at.is_(None)))).scalars().all()
+    for mem in members:
+        mem.deleted_at = m.utcnow()
+        await _soft_delete_subject_requests(db, "member", mem.id)
+    await _soft_delete_subject_requests(db, "family", fid)
+    audit(db, "family.deleted", group_id=fam.group_id, actor_id=user.id, target_id=fid)
+    await db.commit()
+    return {"ok": True}
+
+
+@router.delete("/api/members/{mid}")
+async def delete_member(mid: str, user: m.User = Depends(current_user),
+                        db: AsyncSession = Depends(get_db)):
+    member = await db.get(m.Member, mid)
+    if not member or member.deleted_at:
+        raise HTTPException(404, "Member not found")
+    fam = await db.get(m.Family, member.family_id)
+    await active_membership(db, fam.group_id, user, roles=("leader",))
+    member.deleted_at = m.utcnow()
+    await _soft_delete_subject_requests(db, "member", mid)
+    audit(db, "member.deleted", group_id=fam.group_id, actor_id=user.id, target_id=mid)
+    await db.commit()
+    return {"ok": True}
+
+
+# ----------------------------------------------------------- audit log ----
+
+@router.get("/api/groups/{gid}/audit")
+async def group_audit(gid: str, user: m.User = Depends(current_user),
+                      db: AsyncSession = Depends(get_db)):
+    await active_membership(db, gid, user, roles=("leader",))
+    rows = (await db.execute(select(m.AuditLog).where(m.AuditLog.group_id == gid)
+                             .order_by(m.AuditLog.created_at.desc()).limit(100))).scalars().all()
+    return [{"id": a.id, "action": a.action, "actor_id": a.actor_id, "target_id": a.target_id,
+             "detail": a.detail, "created_at": a.created_at.isoformat()} for a in rows]
 
 
 # ------------------------------------------------------------ the wall ----
@@ -331,7 +457,9 @@ async def join_info(code: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/api/join/{code}", status_code=201)
-async def join(code: str, body: JoinIn, response: Response, db: AsyncSession = Depends(get_db)):
+async def join(code: str, body: JoinIn, request: Request, response: Response,
+               db: AsyncSession = Depends(get_db)):
+    rate_limit(request, "join")
     group = (await db.execute(select(m.Group).where(m.Group.invite_code == code))).scalar_one_or_none()
     if not group:
         raise HTTPException(404, "Invite not found or expired")
@@ -346,7 +474,7 @@ async def join(code: str, body: JoinIn, response: Response, db: AsyncSession = D
         await db.flush()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(409, "An account with that email already exists — sign in instead")
+        raise HTTPException(409, "An account with that email already exists — sign in instead") from None
 
     if body.new_family_name:
         fam = m.Family(group_id=group.id, family_name=body.new_family_name)
@@ -361,6 +489,7 @@ async def join(code: str, body: JoinIn, response: Response, db: AsyncSession = D
     status = "pending" if group.approval_required else "active"
     db.add(m.GroupMembership(user_id=user.id, group_id=group.id, role="member",
                              status=status, family_id=fam.id))
+    audit(db, "join.requested", group_id=group.id, actor_id=user.id, detail=status)
     await db.commit()
     set_session_cookie(response, user.id)
     return {"status": status, "group_name": group.name,
@@ -390,8 +519,10 @@ async def approve(membership_id: str, body: ApproveIn,
     await active_membership(db, ms.group_id, user, roles=("leader",))
     if body.approve:
         ms.status = "active"
+        audit(db, "join.approved", group_id=ms.group_id, actor_id=user.id, target_id=ms.user_id)
         await db.commit()
         return {"status": "active"}
+    audit(db, "join.denied", group_id=ms.group_id, actor_id=user.id, target_id=ms.user_id)
     await db.delete(ms)
     await db.commit()
     return {"status": "denied"}
@@ -402,6 +533,7 @@ async def rotate_invite(gid: str, user: m.User = Depends(current_user), db: Asyn
     await active_membership(db, gid, user, roles=("leader",))
     group = await db.get(m.Group, gid)
     group.invite_code = uuid.uuid4().hex
+    audit(db, "invite.rotated", group_id=gid, actor_id=user.id)
     await db.commit()
     return {"invite_code": group.invite_code}
 

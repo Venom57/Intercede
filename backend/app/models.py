@@ -6,10 +6,17 @@ non-attending relative can be prayed for without ever having a login.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 from sqlalchemy import (
-    Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint,
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -19,7 +26,7 @@ def uid() -> str:
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Base(DeclarativeBase):
@@ -128,6 +135,18 @@ class RequestUpdate(Base):
     request_id: Mapped[str] = mapped_column(String(32), ForeignKey("prayer_requests.id"), index=True)
     author_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.id"))
     body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AuditLog(Base):
+    """Immutable trail of security-relevant actions, scoped per group where possible."""
+    __tablename__ = "audit_log"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
+    action: Mapped[str] = mapped_column(String(60), index=True)
+    group_id: Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)
+    actor_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    detail: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

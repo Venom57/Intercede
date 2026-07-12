@@ -19,6 +19,9 @@ from . import models as m
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///./intercede.db")
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-only-change-me")
+APP_ENV = os.environ.get("APP_ENV", "dev")
+if APP_ENV == "production" and SECRET_KEY == "dev-only-change-me":  # noqa: S105 — detecting the default, not storing a secret
+    raise RuntimeError("SECRET_KEY must be set to a long random value in production")
 SESSION_MAX_AGE = 60 * 60 * 24 * 14  # 14 days
 COOKIE_NAME = "intercede_session"
 
@@ -45,6 +48,11 @@ def verify_password(pw: str, pw_hash: str) -> bool:
         return False
 
 
+# verified against when the email doesn't exist, so unknown-email and
+# wrong-password logins cost the same time (no account enumeration via timing)
+DUMMY_HASH = PasswordHasher().hash("timing-parity-dummy")
+
+
 def set_session_cookie(response: Response, user_id: str) -> None:
     token = signer.dumps(user_id)
     response.set_cookie(
@@ -67,7 +75,7 @@ async def current_user(
     try:
         user_id = signer.loads(intercede_session, max_age=SESSION_MAX_AGE)
     except (BadSignature, SignatureExpired):
-        raise HTTPException(401, "Session invalid or expired")
+        raise HTTPException(401, "Session invalid or expired") from None
     user = await db.get(m.User, user_id)
     if not user:
         raise HTTPException(401, "Session invalid")

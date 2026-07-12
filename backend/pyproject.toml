@@ -1,0 +1,14 @@
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+ignore = [
+    "B008",  # FastAPI Depends() in argument defaults is idiomatic
+    "S104",  # binding 0.0.0.0 inside the container is intentional
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S105", "S106"]  # asserts and literal test passwords
+"app/verses.py" = ["E501"]            # KJV verse text is not wrapped

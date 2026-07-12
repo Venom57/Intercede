@@ -26,6 +26,18 @@ Tests:
 ## What's implemented (slice)
 
 - Auth: argon2id, signed HttpOnly session cookie
+- Security hardening: per-IP rate limiting on login/register/join,
+  account-enumeration resistance (identical error + timing-parity hash),
+  security response headers, non-root container, fail-fast on the default
+  SECRET_KEY when APP_ENV=production — see SECURITY.md
+- Audit log: logins, joins, approvals, invite rotations, deletions, and
+  status changes recorded per group; leaders read it at
+  GET /api/groups/{gid}/audit
+- Request updates thread: POST/GET /api/requests/{rid}/updates
+  (author/leader post; anyone who can see the request reads)
+- Soft deletion with cascade: DELETE /api/requests/{rid} (author/leader),
+  DELETE /api/families/{fid} and /api/members/{mid} (leader) also retire
+  attached requests
 - Groups, Families, Members (members decoupled from user accounts)
 - Requests: polymorphic subject (family|member), categories, urgency,
   privacy (group / leaders_only / family_only) enforced in the SQL query path
@@ -38,10 +50,24 @@ Tests:
 - Frontend: mobile-first PWA-ready shell — Wall / Pray (session mode) /
   Praise / Add tabs, join wizard, 49 KB gzipped JS
 
+## CI/CD
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR:
+
+- **Backend** — ruff lint + pytest unit suite (19 tests: golden paths,
+  privacy enforcement, tenant isolation, rate limiting, enumeration
+  resistance, role gates, audit access control)
+- **Frontend** — TypeScript typecheck + production Vite build
+- **Security** — pip-audit, Bandit, npm audit; CodeQL runs in a separate
+  weekly + per-PR workflow; Dependabot keeps pip/npm/actions current
+- **Docker** — image build validated on PRs; pushed to
+  `ghcr.io/<owner>/intercede-api` on merge to main
+
 ## Known gaps vs. the full spec (next phases)
 
 - Alembic migrations (dev bootstrap uses create_all)
-- Magic-link auth, MFA, CAPTCHA + rate limiting on join, audit log
+- Magic-link auth, MFA, CAPTCHA on join
 - Notifications/digests, PDF prayer sheet export, leader dashboard
 - Service worker offline queue for prayed actions
 - Verse seed texts entered by hand — proofread against a printed KJV
+- Frontend UI for the new updates/delete/audit endpoints

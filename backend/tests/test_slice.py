@@ -5,41 +5,8 @@
 - prayed action is idempotent per user per day
 - QR join approval gate blocks pending members from all group data
 """
-import os
-
-os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
-
 import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
-
-from app.main import app
-from app.deps import SessionLocal, engine
-from app.models import Base
-from app.verses import seed_verses
-
-
-@pytest_asyncio.fixture()
-async def client():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-    async with SessionLocal() as db:
-        await seed_verses(db)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
-        yield c
-
-
-def cookies_of(resp):
-    return {"intercede_session": resp.cookies["intercede_session"]}
-
-
-async def register(client, email, name="Someone"):
-    r = await client.post("/api/auth/register",
-                          json={"email": email, "password": "sufficiently-long", "display_name": name})
-    assert r.status_code == 201, r.text
-    return cookies_of(r)
+from conftest import cookies_of, register
 
 
 @pytest.mark.asyncio
