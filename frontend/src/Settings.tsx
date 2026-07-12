@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, toast } from "./api";
+import { MembersRoster } from "./Roster";
 import type { AuditEntry, GroupT, Me, QueueEntry } from "./types";
 
 function JoinQueue({ gid }: { gid: string }) {
@@ -63,7 +64,7 @@ function AuditTrail({ gid }: { gid: string }) {
   );
 }
 
-function LeaderTools({ group, reloadGroups }: { group: GroupT; reloadGroups: () => void }) {
+function LeaderTools({ group, meId, reloadGroups }: { group: GroupT; meId: string; reloadGroups: () => void }) {
   const joinUrl = `${window.location.origin}/join/${group.invite_code}`;
   const copy = async () => {
     try {
@@ -94,15 +95,18 @@ function LeaderTools({ group, reloadGroups }: { group: GroupT; reloadGroups: () 
       </div>
       <h4 className="settings-sub">Waiting to join</h4>
       <JoinQueue gid={group.id} />
+      <h4 className="settings-sub">Members &amp; roles</h4>
+      <MembersRoster base={`/api/groups/${group.id}`} meId={meId} />
       <h4 className="settings-sub">Audit</h4>
       <AuditTrail gid={group.id} />
     </section>
   );
 }
 
-export function SettingsView({ me, groups, gid, onSwitch, onLoggedOut, reloadGroups }: {
+export function SettingsView({ me, groups, gid, onSwitch, onLoggedOut, reloadGroups, onOpenAdmin }: {
   me: Me; groups: GroupT[]; gid: string;
   onSwitch: (gid: string) => void; onLoggedOut: () => void; reloadGroups: () => void;
+  onOpenAdmin: () => void;
 }) {
   const group = groups.find(g => g.id === gid) ?? groups[0];
   const logout = async () => {
@@ -121,7 +125,13 @@ export function SettingsView({ me, groups, gid, onSwitch, onLoggedOut, reloadGro
           ))}
         </section>
       )}
-      {group.role === "leader" && group.invite_code && <LeaderTools group={group} reloadGroups={reloadGroups} />}
+      {group.role === "leader" && group.invite_code && <LeaderTools group={group} meId={me.id} reloadGroups={reloadGroups} />}
+      {me.is_site_admin && (
+        <section className="settings-section">
+          <h3 className="eyebrow">Site administration</h3>
+          <button className="mini" onClick={onOpenAdmin}>Open site admin</button>
+        </section>
+      )}
       <section className="settings-section">
         <h3 className="eyebrow">Account</h3>
         <p className="settings-account">{me.display_name} <span className="rel">{me.email}</span></p>

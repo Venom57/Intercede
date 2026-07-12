@@ -16,10 +16,12 @@ from . import models as m
 from .deps import (
     DUMMY_HASH,
     active_membership,
+    bootstrap_site_admin,
     clear_session_cookie,
     current_user,
     get_db,
     hash_password,
+    require_site_admin,
     set_session_cookie,
     today,
     verify_password,
@@ -48,6 +50,7 @@ async def register(body: RegisterIn, request: Request, response: Response,
     rate_limit(request, "register")
     user = m.User(email=body.email.lower(), password_hash=hash_password(body.password),
                   display_name=body.display_name)
+    await bootstrap_site_admin(db, user)
     db.add(user)
     try:
         await db.flush()
@@ -85,7 +88,8 @@ async def logout(response: Response):
 
 @router.get("/api/me")
 async def me(user: m.User = Depends(current_user)):
-    return {"id": user.id, "email": user.email, "display_name": user.display_name}
+    return {"id": user.id, "email": user.email, "display_name": user.display_name,
+            "is_site_admin": user.is_site_admin}
 
 
 # -------------------------------------------------------------- groups ----
@@ -486,6 +490,7 @@ async def join(code: str, body: JoinIn, request: Request, response: Response,
     # single transaction: user + (family?) + member record + membership
     user = m.User(email=body.email.lower(), password_hash=hash_password(body.password),
                   display_name=body.display_name)
+    await bootstrap_site_admin(db, user)
     db.add(user)
     try:
         await db.flush()
@@ -566,3 +571,142 @@ async def poster(gid: str, user: m.User = Depends(current_user), db: AsyncSessio
     buf = io.BytesIO()
     img.save(buf)
     return Response(content=buf.getvalue(), media_type="image/svg+xml")
+
+
+# ------------------------------------------------------- role management ----
+
+class RolePatch(BaseModel):
+    role: str = Field(pattern="^(leader|steward|member|viewer)$")
+
+
+async def _group_members(db: AsyncSession, gid: str) -> list[dict]:
+    q = (select(m.GroupMembership, m.User)
+         .join(m.User, m.User.id == m.GroupMembership.user_id)
+         .where(m.GroupMembership.group_id == gid)
+         .order_by(m.User.display_name))
+    rows = (await db.execute(q)).all()
+    return [{"user_id": u.id, "membership_id": ms.id, "display_name": u.display_name,
+             "email": u.email, "role": ms.role, "status": ms.status} for ms, u in rows]
+
+
+async def _set_role(db: AsyncSession, gid: str, user_id: str, new_role: str,
+                    actor: m.User) -> m.GroupMembership:
+    ms = (await db.execute(select(m.GroupMembership).where(
+        m.GroupMembership.group_id == gid, m.GroupMembership.user_id == user_id,
+        m.GroupMembership.status == "active"))).scalar_one_or_none()
+    if ms is None:
+        raise HTTPException(404, "Member not found")
+    old = ms.role
+    if old == "leader" and new_role != "leader":
+        leaders = (await db.execute(select(func.count()).select_from(m.GroupMembership).where(
+            m.GroupMembership.group_id == gid, m.GroupMembership.role == "leader",
+            m.GroupMembership.status == "active"))).scalar_one()
+        if leaders <= 1:
+            raise HTTPException(409, "Promote another admin first")
+    ms.role = new_role
+    audit(db, "role_changed", group_id=gid, actor_id=actor.id, target_id=user_id,
+          detail=f"{old} -> {new_role}")
+    await db.commit()
+    return ms
+
+
+@router.get("/api/groups/{gid}/members")
+async def group_members(gid: str, user: m.User = Depends(current_user),
+                        db: AsyncSession = Depends(get_db)):
+    await active_membership(db, gid, user, roles=("leader",))
+    return await _group_members(db, gid)
+
+
+@router.patch("/api/groups/{gid}/members/{user_id}")
+async def set_member_role(gid: str, user_id: str, body: RolePatch,
+                          user: m.User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    await active_membership(db, gid, user, roles=("leader",))
+    ms = await _set_role(db, gid, user_id, body.role, user)
+    return {"user_id": user_id, "role": ms.role}
+
+
+# ----------------------------------------------------------- site admin ----
+
+@router.get("/api/admin/overview")
+async def admin_overview(admin: m.User = Depends(require_site_admin),
+                         db: AsyncSession = Depends(get_db)):
+    async def count(stmt) -> int:
+        return (await db.execute(stmt)).scalar_one()
+
+    return {
+        "users": await count(select(func.count()).select_from(m.User)),
+        "groups": await count(select(func.count()).select_from(m.Group)),
+        "families": await count(select(func.count()).select_from(m.Family)
+                                .where(m.Family.deleted_at.is_(None))),
+        "requests": await count(select(func.count()).select_from(m.PrayerRequest)
+                                .where(m.PrayerRequest.deleted_at.is_(None))),
+        "prayers": await count(select(func.count()).select_from(m.PrayerAction)),
+    }
+
+
+@router.get("/api/admin/groups")
+async def admin_groups(admin: m.User = Depends(require_site_admin),
+                       db: AsyncSession = Depends(get_db)):
+    groups = (await db.execute(select(m.Group).order_by(m.Group.name))).scalars().all()
+    counts = dict((await db.execute(
+        select(m.GroupMembership.group_id, func.count())
+        .where(m.GroupMembership.status == "active")
+        .group_by(m.GroupMembership.group_id))).all())
+    leaders: dict[str, list[str]] = {}
+    leader_rows = (await db.execute(
+        select(m.GroupMembership.group_id, m.User.display_name)
+        .join(m.User, m.User.id == m.GroupMembership.user_id)
+        .where(m.GroupMembership.role == "leader", m.GroupMembership.status == "active")
+        .order_by(m.User.display_name))).all()
+    for gid, name in leader_rows:
+        leaders.setdefault(gid, []).append(name)
+    return [{"id": g.id, "name": g.name, "created_at": g.created_at.isoformat(),
+             "approval_required": g.approval_required, "member_count": counts.get(g.id, 0),
+             "leaders": leaders.get(g.id, [])} for g in groups]
+
+
+@router.get("/api/admin/groups/{gid}/members")
+async def admin_group_members(gid: str, admin: m.User = Depends(require_site_admin),
+                              db: AsyncSession = Depends(get_db)):
+    if not await db.get(m.Group, gid):
+        raise HTTPException(404, "Group not found")
+    return await _group_members(db, gid)
+
+
+@router.patch("/api/admin/groups/{gid}/members/{user_id}")
+async def admin_set_member_role(gid: str, user_id: str, body: RolePatch,
+                                admin: m.User = Depends(require_site_admin),
+                                db: AsyncSession = Depends(get_db)):
+    ms = await _set_role(db, gid, user_id, body.role, admin)
+    return {"user_id": user_id, "role": ms.role}
+
+
+@router.get("/api/admin/users")
+async def admin_users(admin: m.User = Depends(require_site_admin),
+                      db: AsyncSession = Depends(get_db)):
+    users = (await db.execute(select(m.User).order_by(m.User.created_at).limit(500))).scalars().all()
+    return [{"id": u.id, "email": u.email, "display_name": u.display_name,
+             "is_site_admin": u.is_site_admin, "created_at": u.created_at.isoformat()} for u in users]
+
+
+class SiteAdminPatch(BaseModel):
+    is_site_admin: bool
+
+
+@router.patch("/api/admin/users/{uid}")
+async def admin_set_site_admin(uid: str, body: SiteAdminPatch,
+                               admin: m.User = Depends(require_site_admin),
+                               db: AsyncSession = Depends(get_db)):
+    target = await db.get(m.User, uid)
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.is_site_admin and not body.is_site_admin:
+        admins = (await db.execute(select(func.count()).select_from(m.User)
+                                   .where(m.User.is_site_admin.is_(True)))).scalar_one()
+        if admins <= 1:
+            raise HTTPException(409, "At least one site admin is required")
+    target.is_site_admin = body.is_site_admin
+    audit(db, "site_admin_granted" if body.is_site_admin else "site_admin_revoked",
+          actor_id=admin.id, target_id=uid)
+    await db.commit()
+    return {"id": target.id, "is_site_admin": target.is_site_admin}

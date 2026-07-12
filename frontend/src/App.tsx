@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AdminView } from "./Admin";
 import { api, flushPrayQueue, recordPrayed, toast, TOAST_EVENT, UNAUTHED_EVENT } from "./api";
 import { AuthView, JoinWizard } from "./Onboard";
 import { SettingsView } from "./Settings";
@@ -6,8 +7,8 @@ import { CATEGORIES, type GroupT, type Me, type Req, type UpdateT, type Wall } f
 
 /* -------------------------------- routing -------------------------------- */
 
-type Tab = "wall" | "pray" | "praise" | "add" | "settings";
-const TABS: Tab[] = ["wall", "pray", "praise", "add", "settings"];
+type Tab = "wall" | "pray" | "praise" | "add" | "settings" | "admin";
+const TABS: Tab[] = ["wall", "pray", "praise", "add", "settings", "admin"];
 
 function readTab(): Tab {
   const t = window.location.hash.replace(/^#\//, "");
@@ -454,7 +455,8 @@ export default function App() {
       <header className="topbar">
         <span className="brand">Intercede</span>
         <span className="group-name">{group.name}</span>
-        <button className="gear" aria-label="Settings" aria-current={tab === "settings" || undefined}
+        <button className="gear" aria-label="Settings"
+          aria-current={tab === "settings" || tab === "admin" || undefined}
           onClick={() => setTab("settings")}>⚙</button>
       </header>
       <main className="content">
@@ -466,8 +468,12 @@ export default function App() {
           <SettingsView me={me} groups={groups} gid={group.id}
             onSwitch={id => { setGid(id); setTab("wall"); }}
             onLoggedOut={() => { setMe(null); setGroups(null); wallCache.clear(); }}
-            reloadGroups={loadGroups} />
+            reloadGroups={loadGroups}
+            onOpenAdmin={() => setTab("admin")} />
         )}
+        {tab === "admin" && (me.is_site_admin
+          ? <AdminView me={me} />
+          : <p className="hint">Site admin access is required.</p>)}
       </main>
       <nav className="tabs" aria-label="Main">
         {([["wall", "Wall"], ["pray", "Pray"], ["praise", "Praise"], ["add", "+ Add"]] as const).map(([t, label]) => (

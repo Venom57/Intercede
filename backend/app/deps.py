@@ -12,7 +12,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from fastapi import Cookie, Depends, HTTPException, Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from . import models as m
@@ -79,6 +79,22 @@ async def current_user(
     user = await db.get(m.User, user_id)
     if not user:
         raise HTTPException(401, "Session invalid")
+    return user
+
+
+async def bootstrap_site_admin(db: AsyncSession, user: m.User) -> None:
+    """First account ever created administers the site (self-host bootstrap).
+
+    Call before db.add(user) so the count query doesn't autoflush the new row.
+    """
+    count = (await db.execute(select(func.count()).select_from(m.User))).scalar_one()
+    if count == 0:
+        user.is_site_admin = True
+
+
+async def require_site_admin(user: m.User = Depends(current_user)) -> m.User:
+    if not user.is_site_admin:
+        raise HTTPException(403, "Site admin required")
     return user
 
 

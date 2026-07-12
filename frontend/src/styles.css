@@ -282,6 +282,28 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--candle); bo
 .audit-action { color: var(--parchment); }
 .audit-when { display: block; color: var(--slate); font-size: 0.75rem; }
 
+/* ------------------------------ site admin ------------------------------ */
+
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; }
+.stat-tile {
+  background: var(--panel); border-radius: var(--radius);
+  padding: 12px 8px; text-align: center; display: flex; flex-direction: column; gap: 2px;
+}
+.stat-n { font-family: "Fraunces", Georgia, serif; font-size: 1.5rem; color: var(--candle); }
+.stat-label { color: var(--slate); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; }
+
+.chip {
+  display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 999px;
+  font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+  border: 1px solid var(--slate); color: var(--slate); vertical-align: middle;
+}
+.chip.lead { border-color: var(--candle); color: var(--candle); }
+.chip.pending { border-color: var(--slate); color: var(--slate); font-style: italic; text-transform: none; }
+
+.admin-group { margin-bottom: 4px; }
+.admin-leaders { display: block; color: var(--slate); font-size: 0.8rem; margin-top: 2px; }
+.admin-roster { margin: 0 0 14px 10px; padding-left: 12px; border-left: 1px solid var(--panel-2); }
+
 /* ------------------------ larger screens (enhance) ------------------------ */
 
 @media (min-width: 768px) {

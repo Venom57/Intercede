@@ -73,6 +73,7 @@ AUDIT_ACTIONS = (
     "join.requested", "join.approved", "join.denied",
     "invite.rotated", "request.status_changed", "request.deleted",
     "family.deleted", "member.deleted",
+    "role_changed", "site_admin_granted", "site_admin_revoked",
 )
 
 

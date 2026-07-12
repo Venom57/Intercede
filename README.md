@@ -30,9 +30,18 @@ Tests:
   account-enumeration resistance (identical error + timing-parity hash),
   security response headers, non-root container, fail-fast on the default
   SECRET_KEY when APP_ENV=production — see SECURITY.md
-- Audit log: logins, joins, approvals, invite rotations, deletions, and
-  status changes recorded per group; leaders read it at
+- Audit log: logins, joins, approvals, invite rotations, deletions, role
+  changes, and status changes recorded per group; leaders read it at
   GET /api/groups/{gid}/audit
+- Admin: two tiers. The first account ever created becomes the **site
+  admin** (self-host bootstrap) and gets a site-wide admin screen —
+  overview stats, every group/class with its designated admins, member
+  roster per class with promote/demote, and grant/revoke of site-admin on
+  any user (the last site admin cannot be revoked). Each **class admin**
+  (group leader) can likewise designate co-admins from the Members & roles
+  section of their leader tools (the last admin of a class cannot be
+  demoted until another is promoted). Site admins can manage any class
+  without being a member of it.
 - Request updates thread: POST/GET /api/requests/{rid}/updates
   (author/leader post; anyone who can see the request reads)
 - Soft deletion with cascade: DELETE /api/requests/{rid} (author/leader),
