@@ -1,0 +1,194 @@
+/* Intercede — evening-prayer (vespers) direction.
+   Palette: night indigo ground, candle amber for the living things (active
+   requests, primary actions), answered prayers turn gold. Signature: each
+   active request card carries a lit-wick glow on its left edge.
+   Mobile-first: base styles target 360px; min-width queries only. */
+
+:root {
+  --night: #171b33;
+  --panel: #20264a;
+  --panel-2: #262d56;
+  --candle: #e9b45b;
+  --gold: #d9a441;
+  --parchment: #f0e9d8;
+  --slate: #99a0c0;
+  --error: #e88f8f;
+  --radius: 14px;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--night);
+  color: var(--parchment);
+  font-family: "Albert Sans", system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4, .brand { font-family: "Fraunces", Georgia, serif; font-weight: 600; }
+button { font: inherit; cursor: pointer; }
+
+/* ------------------------------- shell ------------------------------- */
+
+.shell { display: flex; flex-direction: column; min-height: 100dvh; }
+.topbar {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: calc(env(safe-area-inset-top, 0px) + 14px) 18px 12px;
+  border-bottom: 1px solid var(--panel-2);
+}
+.brand { color: var(--candle); font-size: 1.15rem; letter-spacing: 0.01em; }
+.group-name { color: var(--slate); font-size: 0.9rem; }
+
+.content {
+  flex: 1;
+  padding: 16px 16px calc(84px + env(safe-area-inset-bottom, 0px));
+  max-width: 640px; width: 100%; margin: 0 auto;
+}
+
+/* bottom tab nav — thumb zone, 44px+ targets */
+.tabs {
+  position: fixed; inset: auto 0 0 0;
+  display: flex;
+  background: color-mix(in srgb, var(--night) 88%, black);
+  border-top: 1px solid var(--panel-2);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.tabs button {
+  flex: 1; min-height: 56px;
+  background: none; border: none; color: var(--slate);
+  font-size: 0.95rem; font-weight: 500;
+}
+.tabs button.on { color: var(--candle); }
+.tabs button:focus-visible, .primary:focus-visible, .pray-btn:focus-visible,
+.picker-card:focus-visible, .link:focus-visible {
+  outline: 2px solid var(--candle); outline-offset: 2px;
+}
+
+/* ------------------------------ the wall ------------------------------ */
+
+.eyebrow {
+  font-family: "Albert Sans", sans-serif; font-size: 0.75rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.14em; color: var(--slate);
+  margin: 18px 0 8px;
+}
+.family-name { font-size: 1.25rem; margin: 26px 0 10px; }
+.member-name { font-size: 1rem; margin: 14px 0 6px; color: var(--parchment); }
+.member-block { margin-left: 10px; padding-left: 12px; border-left: 1px solid var(--panel-2); }
+.rel { color: var(--slate); font-family: "Albert Sans", sans-serif; font-weight: 400; font-size: 0.85em; }
+
+/* signature: lit-wick glow on the card's left edge */
+.card {
+  position: relative;
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin: 10px 0;
+  overflow: hidden;
+}
+.card::before {
+  content: "";
+  position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--candle);
+  box-shadow: 0 0 14px 3px color-mix(in srgb, var(--candle) 55%, transparent);
+}
+.card.urgent::before { width: 5px; box-shadow: 0 0 20px 5px color-mix(in srgb, var(--candle) 70%, transparent); }
+.card.answered { background: color-mix(in srgb, var(--gold) 14%, var(--panel)); }
+.card.answered::before { background: var(--gold); box-shadow: 0 0 16px 4px color-mix(in srgb, var(--gold) 50%, transparent); }
+
+.card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.card-head h4 { margin: 0; font-size: 1.05rem; }
+.flame {
+  color: var(--night); background: var(--candle);
+  font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
+  padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+}
+.card-body { margin: 6px 0 0; color: var(--parchment); font-size: 0.95rem; }
+
+.verse { margin: 12px 0 0; padding: 0; }
+.verse p {
+  margin: 0; font-family: "Fraunces", Georgia, serif; font-size: 0.98rem;
+  font-style: italic; color: color-mix(in srgb, var(--parchment) 82%, var(--candle));
+}
+.verse cite { display: block; margin-top: 4px; font-style: normal; font-size: 0.8rem; color: var(--slate); }
+
+.card-foot { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.pray-btn {
+  min-height: 44px; padding: 0 18px;
+  border-radius: 999px; border: 1px solid var(--candle);
+  background: none; color: var(--candle); font-weight: 600;
+}
+.pray-btn.did { background: var(--candle); color: var(--night); }
+.count { color: var(--slate); font-size: 0.85rem; }
+
+.urgent-strip { padding-bottom: 6px; border-bottom: 1px solid var(--panel-2); }
+
+/* --------------------------- session mode --------------------------- */
+
+.session { display: flex; flex-direction: column; min-height: 60dvh; justify-content: center; text-align: center; }
+.session-progress { color: var(--slate); font-size: 0.85rem; letter-spacing: 0.1em; }
+.session-title { font-size: 1.7rem; margin: 8px 0; }
+.session-body { color: var(--parchment); }
+.session-verse { margin: 20px auto; max-width: 34ch; }
+.session-verse p { font-size: 1.1rem; }
+.session-next { margin-top: 24px; }
+.session-done { text-align: center; font-family: "Fraunces", Georgia, serif; font-size: 1.2rem; }
+
+/* ------------------------- forms / join wizard ------------------------- */
+
+.join {
+  min-height: 100dvh; max-width: 480px; margin: 0 auto;
+  display: flex; flex-direction: column; justify-content: center;
+  padding: 32px 22px calc(32px + env(safe-area-inset-bottom, 0px));
+}
+.join-title { font-size: 2.1rem; margin: 4px 0 8px; }
+.join-title.brand { color: var(--candle); }
+.join-sub { font-size: 1.3rem; margin: 0 0 8px; }
+.join-lede { color: var(--slate); margin: 0 0 22px; }
+
+.form { display: flex; flex-direction: column; gap: 14px; }
+.form label { display: flex; flex-direction: column; gap: 6px; font-size: 0.9rem; color: var(--slate); }
+.form label.row { flex-direction: row; align-items: center; gap: 10px; color: var(--parchment); }
+input, textarea, select {
+  font: inherit; color: var(--parchment);
+  background: var(--panel); border: 1px solid var(--panel-2);
+  border-radius: 10px; padding: 12px 14px; min-height: 44px;
+}
+input:focus, textarea:focus, select:focus { outline: 2px solid var(--candle); border-color: var(--candle); }
+
+.primary, .btn-link {
+  min-height: 50px; border-radius: 999px; border: none;
+  background: var(--candle); color: var(--night);
+  font-weight: 700; font-size: 1rem;
+  display: inline-flex; align-items: center; justify-content: center;
+  text-decoration: none; padding: 0 22px;
+}
+.primary:disabled { opacity: 0.45; cursor: not-allowed; }
+.link { background: none; border: none; color: var(--candle); text-decoration: underline; padding: 8px 0; }
+
+.picker-family { margin-bottom: 14px; }
+.picker-card {
+  display: block; width: 100%; text-align: left;
+  background: var(--panel); color: var(--parchment);
+  border: 1px solid var(--panel-2); border-radius: var(--radius);
+  padding: 14px 16px; min-height: 52px; margin: 6px 0;
+  font-size: 1rem;
+}
+.picker-card.member { margin-left: 14px; width: calc(100% - 14px); }
+.picker-card.sel { border-color: var(--candle); box-shadow: 0 0 0 1px var(--candle) inset; }
+
+.hint { color: var(--slate); text-align: center; margin-top: 32px; }
+.error { color: var(--error); margin: 0; }
+
+/* ------------------------ larger screens (enhance) ------------------------ */
+
+@media (min-width: 768px) {
+  .content { max-width: 720px; }
+  .tabs { position: sticky; bottom: 0; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .card::before { transition: box-shadow 300ms ease; }
+  .card:hover::before { box-shadow: 0 0 22px 5px color-mix(in srgb, var(--candle) 65%, transparent); }
+}
