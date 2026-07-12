@@ -47,8 +47,26 @@ Tests:
 - Answered → praise wall with answer note
 - QR join: /join/{code} wizard (join or create family), approval queue,
   code rotation, server-rendered SVG poster QR
-- Frontend: mobile-first PWA-ready shell — Wall / Pray (session mode) /
-  Praise / Add tabs, join wizard, 49 KB gzipped JS
+- Frontend: mobile-first installable PWA — Wall / Pray (session mode) /
+  Praise / Add tabs plus a settings/leader screen, join wizard,
+  ~53 KB gzipped JS
+  - Service worker caches the app shell (never API data); manifest + icons
+    for home-screen install
+  - "I prayed" taps are optimistic and queue offline (localStorage),
+    flushing on reconnect
+  - Wall payload embeds each request's verse and prayed-today state
+    (one request per screen, no N+1 fetches); per-group wall cache makes
+    tab switches instant (stale-while-revalidate)
+  - Hash routing so the back gesture navigates tabs/wizard steps instead
+    of exiting the app
+  - Expired sessions route back to sign-in; load failures show retry, not
+    a dead spinner
+  - Leader tools in-app: join-queue approve/deny, invite link copy + QR
+    poster, code rotation, audit trail; members get group switcher + logout
+  - Request cards: updates thread (author/leader post) and remove
+  - Self-hosted variable fonts (no third-party requests), dark
+    color-scheme for native controls, press states, ARIA live regions,
+    safe-area padding on all four edges
 
 ## CI/CD
 
@@ -57,7 +75,8 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR:
 - **Backend** — ruff lint + pytest unit suite (19 tests: golden paths,
   privacy enforcement, tenant isolation, rate limiting, enumeration
   resistance, role gates, audit access control)
-- **Frontend** — TypeScript typecheck + production Vite build
+- **Frontend** — ESLint (typescript-eslint + react-hooks), TypeScript
+  typecheck + production Vite build
 - **Security** — pip-audit, Bandit, npm audit; CodeQL runs in a separate
   weekly + per-PR workflow; Dependabot keeps pip/npm/actions current
 - **Docker** — image build validated on PRs; pushed to
@@ -67,7 +86,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR:
 
 - Alembic migrations (dev bootstrap uses create_all)
 - Magic-link auth, MFA, CAPTCHA on join
-- Notifications/digests, PDF prayer sheet export, leader dashboard
-- Service worker offline queue for prayed actions
+- Notifications/digests, PDF prayer sheet export
 - Verse seed texts entered by hand — proofread against a printed KJV
-- Frontend UI for the new updates/delete/audit endpoints
+- Production static hosting for the frontend (nginx serving dist/ and
+  proxying /api — compose currently ships the API only)

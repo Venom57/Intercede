@@ -1,42 +1,174 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { api, flushPrayQueue, recordPrayed, toast, TOAST_EVENT, UNAUTHED_EVENT } from "./api";
+import { AuthView, JoinWizard } from "./Onboard";
+import { SettingsView } from "./Settings";
+import { CATEGORIES, type GroupT, type Me, type Req, type UpdateT, type Wall } from "./types";
 
-/* ---------------------------------- api ---------------------------------- */
+/* -------------------------------- routing -------------------------------- */
 
-async function api(path: string, opts: RequestInit = {}) {
-  const res = await fetch(path, {
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    ...opts,
-  });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
-  return res.json();
+type Tab = "wall" | "pray" | "praise" | "add" | "settings";
+const TABS: Tab[] = ["wall", "pray", "praise", "add", "settings"];
+
+function readTab(): Tab {
+  const t = window.location.hash.replace(/^#\//, "");
+  return (TABS as string[]).includes(t) ? (t as Tab) : "wall";
 }
 
-/* --------------------------------- types --------------------------------- */
+function useTab(): [Tab, (t: Tab) => void] {
+  const [tab, setTab] = useState<Tab>(readTab);
+  useEffect(() => {
+    const on = () => setTab(readTab());
+    window.addEventListener("hashchange", on);
+    return () => window.removeEventListener("hashchange", on);
+  }, []);
+  return [tab, (t: Tab) => { window.location.hash = `/${t}`; }];
+}
 
-type Req = {
-  id: string; title: string; body: string; category: string; status: string;
-  privacy: string; is_urgent: boolean; prayer_count: number;
-  subject_type: string; subject_id: string;
-};
-type MemberT = { id: string; display_name: string; relationship_label: string | null; requests: Req[] };
-type FamilyT = { id: string; family_name: string; requests: Req[]; members: MemberT[] };
-type Wall = { urgent: Req[]; families: FamilyT[] };
-type GroupT = { id: string; name: string; role: string; invite_code: string | null };
+/* ------------------------- wall cache (per group) ------------------------- */
 
-const CATEGORIES: [string, string][] = [
-  ["healing", "Healing"], ["grief", "Grief"], ["anxiety", "Anxiety"],
-  ["provision", "Provision"], ["salvation", "Salvation"], ["family", "Family"],
-  ["guidance", "Guidance"], ["travel", "Travel"], ["strength", "Strength"],
-  ["thanksgiving", "Thanksgiving"], ["general", "General"],
-];
+const wallCache = new Map<string, Wall>();
 
-/* ------------------------------ request card ----------------------------- */
+/** Reflect an optimistic prayed toggle into every cached wall (immutably). */
+function patchCachedPrayed(reqId: string, delta: 1 | -1) {
+  const patch = (r: Req): Req =>
+    r.id === reqId ? { ...r, prayed_today: delta > 0, prayer_count: r.prayer_count + delta } : r;
+  for (const [g, w] of wallCache) {
+    wallCache.set(g, {
+      urgent: w.urgent.map(patch),
+      families: w.families.map(f => ({
+        ...f,
+        requests: f.requests.map(patch),
+        members: f.members.map(m => ({ ...m, requests: m.requests.map(patch) })),
+      })),
+    });
+  }
+}
 
-function RequestCard({ req, onPrayed }: { req: Req; onPrayed: (id: string) => void }) {
-  const [verse, setVerse] = useState<{ reference: string; text: string } | null>(null);
-  const [prayed, setPrayed] = useState(false);
-  useEffect(() => { api(`/api/requests/${req.id}/verse`).then(setVerse).catch(() => {}); }, [req.id]);
+function useWall(gid: string) {
+  const [wall, setWall] = useState<Wall | null>(() => wallCache.get(gid) ?? null);
+  const [err, setErr] = useState("");
+  const reload = useCallback(() => {
+    api<Wall>(`/api/groups/${gid}/wall`)
+      .then(w => { wallCache.set(gid, w); setWall(w); setErr(""); })
+      .catch((e: Error) => setErr(e.message));
+  }, [gid]);
+  useEffect(reload, [reload]); // cached copy shows instantly; this revalidates
+  return { wall, err, reload };
+}
+
+/* ----------------------------- shared widgets ----------------------------- */
+
+function SkeletonCards({ n = 3 }: { n?: number }) {
+  return (
+    <div aria-hidden="true">
+      {Array.from({ length: n }, (_, i) => (
+        <div key={i} className="card skeleton">
+          <div className="sk-line w60" /><div className="sk-line w90" /><div className="sk-line w40" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ErrorRetry({ msg, onRetry }: { msg: string; onRetry: () => void }) {
+  return (
+    <div className="load-error" role="alert">
+      <p className="error">{msg}</p>
+      <button className="mini" onClick={onRetry}>Try again</button>
+    </div>
+  );
+}
+
+function Toaster() {
+  const [msg, setMsg] = useState("");
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const on = (e: Event) => {
+      setMsg((e as CustomEvent<string>).detail);
+      clearTimeout(timer);
+      timer = setTimeout(() => setMsg(""), 3200);
+    };
+    window.addEventListener(TOAST_EVENT, on);
+    return () => { window.removeEventListener(TOAST_EVENT, on); clearTimeout(timer); };
+  }, []);
+  return <div className={`toast ${msg ? "show" : ""}`} role="status" aria-live="polite">{msg}</div>;
+}
+
+/* ------------------------------ request card ------------------------------ */
+
+function UpdatesThread({ req, canPost }: { req: Req; canPost: boolean }) {
+  const [updates, setUpdates] = useState<UpdateT[] | null>(null);
+  const [draft, setDraft] = useState("");
+  useEffect(() => {
+    api<UpdateT[]>(`/api/requests/${req.id}/updates`).then(setUpdates).catch(() => setUpdates([]));
+  }, [req.id]);
+  const post = async () => {
+    try {
+      await api(`/api/requests/${req.id}/updates`, { method: "POST", body: JSON.stringify({ body: draft }) });
+      setUpdates(null); // refetch
+      setDraft("");
+      const fresh = await api<UpdateT[]>(`/api/requests/${req.id}/updates`);
+      setUpdates(fresh);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not post update");
+    }
+  };
+  if (!updates) return <p className="hint small">Loading updates…</p>;
+  return (
+    <div className="updates">
+      {updates.length === 0 && <p className="hint small">No updates yet.</p>}
+      {updates.map(u => (
+        <p key={u.id} className="update">
+          {u.body}
+          <span className="update-meta">{u.author} · {new Date(u.created_at).toLocaleDateString()}</span>
+        </p>
+      ))}
+      {canPost && (
+        <div className="update-form">
+          <input value={draft} onChange={e => setDraft(e.target.value)} maxLength={4000}
+                 placeholder="Share an update…" aria-label="New update" />
+          <button className="mini" disabled={!draft.trim()} onClick={post}>Post</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RequestCard({ req, meId, role, onRemoved }: {
+  req: Req; meId: string; role: string; onRemoved: () => void;
+}) {
+  const [prayed, setPrayed] = useState(req.prayed_today);
+  const [count, setCount] = useState(req.prayer_count);
+  const [showUpdates, setShowUpdates] = useState(false);
+  const canEdit = req.created_by === meId || role === "leader";
+
+  const pray = async () => {
+    if (prayed) return;
+    setPrayed(true);
+    setCount(c => c + 1);
+    patchCachedPrayed(req.id, 1); // keep cached walls consistent across tab switches
+    try {
+      const result = await recordPrayed(req.id);
+      if (result === "queued") toast("Offline — your prayer will be recorded when you reconnect");
+    } catch (e) {
+      setPrayed(false);
+      setCount(c => c - 1);
+      patchCachedPrayed(req.id, -1);
+      toast(e instanceof Error ? e.message : "Could not record — try again");
+    }
+  };
+
+  const remove = async () => {
+    if (!window.confirm(`Remove "${req.title}" from the wall?`)) return;
+    try {
+      await api(`/api/requests/${req.id}`, { method: "DELETE" });
+      toast("Request removed");
+      onRemoved();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not remove");
+    }
+  };
+
   return (
     <article className={`card ${req.is_urgent ? "urgent" : ""}`}>
       <div className="card-head">
@@ -44,40 +176,43 @@ function RequestCard({ req, onPrayed }: { req: Req; onPrayed: (id: string) => vo
         {req.is_urgent && <span className="flame" aria-label="urgent">urgent</span>}
       </div>
       {req.body && <p className="card-body">{req.body}</p>}
-      {verse && (
+      {req.verse && (
         <blockquote className="verse">
-          <p>{verse.text}</p>
-          <cite>{verse.reference} (KJV)</cite>
+          <p>{req.verse.text}</p>
+          <cite>{req.verse.reference} ({req.verse.translation})</cite>
         </blockquote>
       )}
       <div className="card-foot">
-        <button
-          className={`pray-btn ${prayed ? "did" : ""}`}
-          onClick={() => { setPrayed(true); onPrayed(req.id); }}
-        >
+        <button className={`pray-btn ${prayed ? "did" : ""}`} onClick={pray}>
           {prayed ? "Prayed today" : "I prayed"}
         </button>
-        <span className="count">{req.prayer_count + (prayed ? 1 : 0)} prayers</span>
+        <span className="count" aria-live="polite">{count} prayers</span>
+        <span className="card-tools">
+          <button className="link small" aria-expanded={showUpdates} onClick={() => setShowUpdates(!showUpdates)}>
+            Updates
+          </button>
+          {canEdit && <button className="link small deny" onClick={remove}>Remove</button>}
+        </span>
       </div>
+      {showUpdates && <UpdatesThread req={req} canPost={canEdit} />}
     </article>
   );
 }
 
-/* ---------------------------------- wall --------------------------------- */
+/* ---------------------------------- wall ---------------------------------- */
 
-function WallView({ groupId }: { groupId: string }) {
-  const [wall, setWall] = useState<Wall | null>(null);
-  const load = useCallback(() => { api(`/api/groups/${groupId}/wall`).then(setWall); }, [groupId]);
-  useEffect(load, [load]);
-  const prayed = (id: string) => api(`/api/requests/${id}/prayed`, { method: "POST" }).catch(() => {});
-  if (!wall) return <p className="hint">Lighting the candles…</p>;
+function WallView({ gid, meId, role }: { gid: string; meId: string; role: string }) {
+  const { wall, err, reload } = useWall(gid);
+  if (err && !wall) return <ErrorRetry msg={err} onRetry={reload} />;
+  if (!wall) return <SkeletonCards />;
   const empty = wall.families.every(f => f.requests.length === 0 && f.members.every(m => m.requests.length === 0));
+  const card = (r: Req) => <RequestCard key={r.id} req={r} meId={meId} role={role} onRemoved={reload} />;
   return (
     <div>
       {wall.urgent.length > 0 && (
         <section className="urgent-strip">
           <h3 className="eyebrow">Urgent</h3>
-          {wall.urgent.map(r => <RequestCard key={r.id} req={r} onPrayed={prayed} />)}
+          {wall.urgent.map(card)}
         </section>
       )}
       {empty && <p className="hint">No active requests yet. Add the first one from the + tab.</p>}
@@ -87,14 +222,14 @@ function WallView({ groupId }: { groupId: string }) {
         return (
           <section key={f.id} className="family">
             <h3 className="family-name">{f.family_name}</h3>
-            {f.requests.filter(r => !r.is_urgent).map(r => <RequestCard key={r.id} req={r} onPrayed={prayed} />)}
+            {f.requests.filter(r => !r.is_urgent).map(card)}
             {f.members.map(m => m.requests.length > 0 && (
               <div key={m.id} className="member-block">
                 <h4 className="member-name">
                   {m.display_name}
                   {m.relationship_label && <span className="rel"> · {m.relationship_label}</span>}
                 </h4>
-                {m.requests.filter(r => !r.is_urgent).map(r => <RequestCard key={r.id} req={r} onPrayed={prayed} />)}
+                {m.requests.filter(r => !r.is_urgent).map(card)}
               </div>
             ))}
           </section>
@@ -104,41 +239,37 @@ function WallView({ groupId }: { groupId: string }) {
   );
 }
 
-/* ----------------------------- prayer session ---------------------------- */
+/* ------------------------------ prayer session ---------------------------- */
 
-function SessionView({ groupId }: { groupId: string }) {
-  const [queue, setQueue] = useState<Req[] | null>(null);
+function SessionView({ gid }: { gid: string }) {
+  const { wall, err, reload } = useWall(gid);
   const [i, setI] = useState(0);
-  const [verse, setVerse] = useState<{ reference: string; text: string } | null>(null);
-  useEffect(() => {
-    api(`/api/groups/${groupId}/wall`).then((w: Wall) => {
-      const all = [
-        ...w.urgent,
-        ...w.families.flatMap(f => [...f.requests, ...f.members.flatMap(m => m.requests)]),
-      ];
-      const seen = new Set<string>();
-      setQueue(all.filter(r => !seen.has(r.id) && seen.add(r.id)));
-    });
-  }, [groupId]);
-  const cur = queue?.[i];
-  useEffect(() => {
-    if (cur) api(`/api/requests/${cur.id}/verse`).then(setVerse).catch(() => setVerse(null));
-  }, [cur?.id]);
-  if (!queue) return <p className="hint">Gathering requests…</p>;
+  const queue = useMemo(() => {
+    if (!wall) return null;
+    const all = [
+      ...wall.urgent,
+      ...wall.families.flatMap(f => [...f.requests, ...f.members.flatMap(m => m.requests)]),
+    ];
+    const seen = new Set<string>();
+    return all.filter(r => !seen.has(r.id) && seen.add(r.id));
+  }, [wall]);
+  if (err && !wall) return <ErrorRetry msg={err} onRetry={reload} />;
+  if (!queue) return <SkeletonCards n={1} />;
+  const cur = queue[i];
   if (!cur) return <p className="hint session-done">You have prayed through every request. Amen.</p>;
   const advance = () => {
-    api(`/api/requests/${cur.id}/prayed`, { method: "POST" }).catch(() => {});
-    setVerse(null); setI(i + 1);
+    recordPrayed(cur.id).catch(() => { /* best effort inside the flow */ });
+    setI(i + 1);
   };
   return (
     <div className="session">
-      <p className="session-progress">{i + 1} of {queue.length}</p>
+      <p className="session-progress" aria-live="polite">{i + 1} of {queue.length}</p>
       <h2 className="session-title">{cur.title}</h2>
       {cur.body && <p className="session-body">{cur.body}</p>}
-      {verse && (
+      {cur.verse && (
         <blockquote className="verse session-verse">
-          <p>{verse.text}</p>
-          <cite>{verse.reference} (KJV)</cite>
+          <p>{cur.verse.text}</p>
+          <cite>{cur.verse.reference} ({cur.verse.translation})</cite>
         </blockquote>
       )}
       <button className="primary session-next" onClick={advance}>Amen — next</button>
@@ -146,11 +277,19 @@ function SessionView({ groupId }: { groupId: string }) {
   );
 }
 
-/* ------------------------------- praise wall ------------------------------ */
+/* -------------------------------- praise wall ----------------------------- */
 
-function PraiseView({ groupId }: { groupId: string }) {
-  const [items, setItems] = useState<{ id: string; title: string; answer_note: string | null; answered_at: string | null }[]>([]);
-  useEffect(() => { api(`/api/groups/${groupId}/praise-wall`).then(setItems); }, [groupId]);
+function PraiseView({ gid }: { gid: string }) {
+  const [items, setItems] = useState<{ id: string; title: string; answer_note: string | null; answered_at: string | null }[] | null>(null);
+  const [err, setErr] = useState("");
+  const load = useCallback(() => {
+    api<typeof items>(`/api/groups/${gid}/praise-wall`)
+      .then(items => { setItems(items); setErr(""); })
+      .catch((e: Error) => setErr(e.message));
+  }, [gid]);
+  useEffect(load, [load]);
+  if (err && !items) return <ErrorRetry msg={err} onRetry={load} />;
+  if (!items) return <SkeletonCards />;
   if (items.length === 0) return <p className="hint">Answered prayers will glow here.</p>;
   return (
     <div>
@@ -165,10 +304,10 @@ function PraiseView({ groupId }: { groupId: string }) {
   );
 }
 
-/* ------------------------------- new request ------------------------------ */
+/* -------------------------------- new request ----------------------------- */
 
-function NewRequestView({ groupId, onDone }: { groupId: string; onDone: () => void }) {
-  const [wall, setWall] = useState<Wall | null>(null);
+function NewRequestView({ gid, onDone }: { gid: string; onDone: () => void }) {
+  const { wall, err: loadErr, reload } = useWall(gid);
   const [subject, setSubject] = useState<{ type: "family" | "member"; id: string; label: string } | null>(null);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -176,8 +315,8 @@ function NewRequestView({ groupId, onDone }: { groupId: string; onDone: () => vo
   const [urgent, setUrgent] = useState(false);
   const [privacy, setPrivacy] = useState("group");
   const [err, setErr] = useState("");
-  useEffect(() => { api(`/api/groups/${groupId}/wall`).then(setWall); }, [groupId]);
-  if (!wall) return <p className="hint">Loading families…</p>;
+  if (loadErr && !wall) return <ErrorRetry msg={loadErr} onRetry={reload} />;
+  if (!wall) return <SkeletonCards />;
   if (!subject) {
     return (
       <div>
@@ -202,15 +341,18 @@ function NewRequestView({ groupId, onDone }: { groupId: string; onDone: () => vo
   const submit = async () => {
     setErr("");
     try {
-      await api(`/api/groups/${groupId}/requests`, {
+      await api(`/api/groups/${gid}/requests`, {
         method: "POST",
         body: JSON.stringify({
           subject_type: subject.type, subject_id: subject.id,
           title, body, category_slug: cat, is_urgent: urgent, privacy,
         }),
       });
+      toast("Request added to the wall");
       onDone();
-    } catch (e: any) { setErr(e.message); }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Something went wrong");
+    }
   };
   return (
     <div className="form">
@@ -236,143 +378,60 @@ function NewRequestView({ groupId, onDone }: { groupId: string; onDone: () => vo
       <label className="row">
         <input type="checkbox" checked={urgent} onChange={e => setUrgent(e.target.checked)} /> Urgent
       </label>
-      {err && <p className="error">{err}</p>}
+      {err && <p className="error" role="alert">{err}</p>}
       <button className="primary" disabled={!title.trim()} onClick={submit}>Add request</button>
-    </div>
-  );
-}
-
-/* -------------------------------- join wizard ----------------------------- */
-
-function JoinWizard({ code }: { code: string }) {
-  const [info, setInfo] = useState<{ group_name: string; families: { id: string; family_name: string }[] } | null>(null);
-  const [step, setStep] = useState(0);
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [pw, setPw] = useState("");
-  const [famId, setFamId] = useState<string | null>(null);
-  const [newFam, setNewFam] = useState("");
-  const [result, setResult] = useState<{ status: string; message: string } | null>(null);
-  const [err, setErr] = useState("");
-  useEffect(() => { api(`/api/join/${code}`).then(setInfo).catch(e => setErr(e.message)); }, [code]);
-  if (err && !info) return <div className="join"><p className="error">{err}</p></div>;
-  if (!info) return <div className="join"><p className="hint">Opening your invitation…</p></div>;
-  if (result) {
-    return (
-      <div className="join">
-        <h1 className="join-title">{result.status === "pending" ? "Almost there" : "Welcome!"}</h1>
-        <p className="join-lede">{result.message}</p>
-        {result.status !== "pending" && <a className="primary btn-link" href="/">Open the prayer wall</a>}
-      </div>
-    );
-  }
-  const submit = async () => {
-    setErr("");
-    try {
-      const r = await api(`/api/join/${code}`, {
-        method: "POST",
-        body: JSON.stringify({
-          display_name: name, email, password: pw,
-          family_id: famId, new_family_name: famId ? null : (newFam || null),
-        }),
-      });
-      setResult(r);
-    } catch (e: any) { setErr(e.message); }
-  };
-  return (
-    <div className="join">
-      {step === 0 && (<>
-        <p className="eyebrow">You are invited to</p>
-        <h1 className="join-title">{info.group_name}</h1>
-        <p className="join-lede">A shared prayer wall for our study — requests, updates, and answered prayers, kept within the group.</p>
-        <button className="primary" onClick={() => setStep(1)}>Join the group</button>
-      </>)}
-      {step === 1 && (<div className="form">
-        <h2 className="join-sub">About you</h2>
-        <label>Your name<input autoComplete="name" value={name} onChange={e => setName(e.target.value)} /></label>
-        <label>Email<input type="email" inputMode="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} /></label>
-        <label>Password<input type="password" autoComplete="new-password" value={pw} onChange={e => setPw(e.target.value)} placeholder="8+ characters" /></label>
-        <button className="primary" disabled={!name || !email || pw.length < 8} onClick={() => setStep(2)}>Next</button>
-      </div>)}
-      {step === 2 && (<div className="form">
-        <h2 className="join-sub">Your family</h2>
-        {info.families.map(f => (
-          <button key={f.id} className={`picker-card ${famId === f.id ? "sel" : ""}`}
-            onClick={() => { setFamId(f.id); setNewFam(""); }}>{f.family_name}</button>
-        ))}
-        <label>Or start a new family
-          <input value={newFam} onChange={e => { setNewFam(e.target.value); setFamId(null); }} placeholder="e.g. The Andersons" />
-        </label>
-        {err && <p className="error">{err}</p>}
-        <button className="primary" disabled={!famId && !newFam.trim()} onClick={submit}>Finish</button>
-      </div>)}
-    </div>
-  );
-}
-
-/* ------------------------------- auth screen ------------------------------ */
-
-function AuthView({ onAuthed }: { onAuthed: () => void }) {
-  const [mode, setMode] = useState<"login" | "register">("login");
-  const [email, setEmail] = useState("");
-  const [pw, setPw] = useState("");
-  const [name, setName] = useState("");
-  const [err, setErr] = useState("");
-  const go = async () => {
-    setErr("");
-    try {
-      await api(`/api/auth/${mode}`, {
-        method: "POST",
-        body: JSON.stringify(mode === "login" ? { email, password: pw } : { email, password: pw, display_name: name }),
-      });
-      onAuthed();
-    } catch (e: any) { setErr(e.message); }
-  };
-  return (
-    <div className="join">
-      <h1 className="join-title brand">Intercede</h1>
-      <p className="join-lede">Bear one another's burdens.</p>
-      <div className="form">
-        {mode === "register" && <label>Your name<input autoComplete="name" value={name} onChange={e => setName(e.target.value)} /></label>}
-        <label>Email<input type="email" inputMode="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} /></label>
-        <label>Password<input type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} value={pw} onChange={e => setPw(e.target.value)} /></label>
-        {err && <p className="error">{err}</p>}
-        <button className="primary" onClick={go}>{mode === "login" ? "Sign in" : "Create account"}</button>
-        <button className="link" onClick={() => setMode(mode === "login" ? "register" : "login")}>
-          {mode === "login" ? "New here? Create an account" : "Have an account? Sign in"}
-        </button>
-      </div>
     </div>
   );
 }
 
 /* ---------------------------------- shell --------------------------------- */
 
+const GID_KEY = "intercede.gid";
+
 export default function App() {
   const joinCode = useMemo(() => {
     const match = window.location.pathname.match(/^\/join\/([A-Za-z0-9]+)/);
     return match ? match[1] : null;
   }, []);
-  const [authed, setAuthed] = useState<boolean | null>(null);
+  const [me, setMe] = useState<Me | null | undefined>(undefined); // undefined = checking
   const [groups, setGroups] = useState<GroupT[] | null>(null);
-  const [gid, setGid] = useState<string | null>(null);
-  const [tab, setTab] = useState<"wall" | "pray" | "praise" | "add">("wall");
+  const [gid, setGid] = useState<string | null>(() => localStorage.getItem(GID_KEY));
+  const [tab, setTab] = useTab();
   const [newGroupName, setNewGroupName] = useState("");
 
   const loadGroups = useCallback(() => {
-    api("/api/groups").then((gs: GroupT[]) => {
+    api<GroupT[]>("/api/groups").then(gs => {
       setGroups(gs);
-      if (gs.length > 0) setGid(g => g ?? gs[0].id);
-    });
+      setGid(g => (g && gs.some(x => x.id === g)) ? g : (gs[0]?.id ?? null));
+    }).catch(() => setGroups([]));
   }, []);
-  useEffect(() => {
-    api("/api/me").then(() => { setAuthed(true); loadGroups(); }).catch(() => setAuthed(false));
+
+  const onAuthed = useCallback(() => {
+    api<Me>("/api/me").then(setMe).catch(() => setMe(null));
+    loadGroups();
+    flushPrayQueue().then(n => { if (n > 0) toast(`${n} queued prayer${n === 1 ? "" : "s"} delivered`); });
   }, [loadGroups]);
 
-  if (joinCode) return <JoinWizard code={joinCode} />;
-  if (authed === null) return <p className="hint">…</p>;
-  if (!authed) return <AuthView onAuthed={() => { setAuthed(true); loadGroups(); }} />;
-  if (!groups) return <p className="hint">…</p>;
+  useEffect(() => {
+    api<Me>("/api/me").then(u => { setMe(u); loadGroups(); }).catch(() => setMe(null));
+    const onUnauthed = () => { setMe(null); setGroups(null); wallCache.clear(); };
+    window.addEventListener(UNAUTHED_EVENT, onUnauthed);
+    const onOnline = () => {
+      flushPrayQueue().then(n => { if (n > 0) toast(`${n} queued prayer${n === 1 ? "" : "s"} delivered`); });
+    };
+    window.addEventListener("online", onOnline);
+    return () => {
+      window.removeEventListener(UNAUTHED_EVENT, onUnauthed);
+      window.removeEventListener("online", onOnline);
+    };
+  }, [loadGroups]);
+
+  useEffect(() => { if (gid) localStorage.setItem(GID_KEY, gid); }, [gid]);
+
+  if (joinCode) return <><JoinWizard code={joinCode} /><Toaster /></>;
+  if (me === undefined) return <SkeletonCards />;
+  if (!me) return <><AuthView onAuthed={onAuthed} /><Toaster /></>;
+  if (!groups) return <SkeletonCards />;
   if (groups.length === 0) {
     return (
       <div className="join">
@@ -385,6 +444,7 @@ export default function App() {
             Create group
           </button>
         </div>
+        <Toaster />
       </div>
     );
   }
@@ -394,18 +454,28 @@ export default function App() {
       <header className="topbar">
         <span className="brand">Intercede</span>
         <span className="group-name">{group.name}</span>
+        <button className="gear" aria-label="Settings" aria-current={tab === "settings" || undefined}
+          onClick={() => setTab("settings")}>⚙</button>
       </header>
       <main className="content">
-        {tab === "wall" && <WallView key={`w${gid}`} groupId={group.id} />}
-        {tab === "pray" && <SessionView key={`s${gid}`} groupId={group.id} />}
-        {tab === "praise" && <PraiseView key={`p${gid}`} groupId={group.id} />}
-        {tab === "add" && <NewRequestView groupId={group.id} onDone={() => setTab("wall")} />}
+        {tab === "wall" && <WallView key={`w${group.id}`} gid={group.id} meId={me.id} role={group.role} />}
+        {tab === "pray" && <SessionView key={`s${group.id}`} gid={group.id} />}
+        {tab === "praise" && <PraiseView key={`p${group.id}`} gid={group.id} />}
+        {tab === "add" && <NewRequestView key={`a${group.id}`} gid={group.id} onDone={() => setTab("wall")} />}
+        {tab === "settings" && (
+          <SettingsView me={me} groups={groups} gid={group.id}
+            onSwitch={id => { setGid(id); setTab("wall"); }}
+            onLoggedOut={() => { setMe(null); setGroups(null); wallCache.clear(); }}
+            reloadGroups={loadGroups} />
+        )}
       </main>
       <nav className="tabs" aria-label="Main">
         {([["wall", "Wall"], ["pray", "Pray"], ["praise", "Praise"], ["add", "+ Add"]] as const).map(([t, label]) => (
-          <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>{label}</button>
+          <button key={t} className={tab === t ? "on" : ""} aria-current={tab === t ? "page" : undefined}
+            onClick={() => setTab(t)}>{label}</button>
         ))}
       </nav>
+      <Toaster />
     </div>
   );
 }

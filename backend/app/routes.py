@@ -388,11 +388,28 @@ async def wall(gid: str, user: m.User = Depends(current_user), db: AsyncSession 
         .where(m.PrayerAction.request_id.in_([r.id for r in reqs] or [""]))
         .group_by(m.PrayerAction.request_id))).all())
 
+    prayed_ids = set((await db.execute(
+        select(m.PrayerAction.request_id).where(
+            m.PrayerAction.user_id == user.id, m.PrayerAction.prayed_on == today(),
+            m.PrayerAction.request_id.in_([r.id for r in reqs] or [""])))).scalars().all())
+
+    packs: dict[str, list[m.Verse]] = {}
+    verses = (await db.execute(select(m.Verse).where(
+        m.Verse.category_slug.in_(list({r.category_slug for r in reqs}) or [""]))
+        .order_by(m.Verse.position))).scalars().all()
+    for v in verses:
+        packs.setdefault(v.category_slug, []).append(v)
+
     def req_json(r: m.PrayerRequest):
+        pack = packs.get(r.category_slug, [])
+        v = pack[r.verse_index % len(pack)] if pack else None
         return {"id": r.id, "title": r.title, "body": r.body, "category": r.category_slug,
                 "status": r.status, "privacy": r.privacy, "is_urgent": r.is_urgent,
                 "subject_type": r.subject_type, "subject_id": r.subject_id,
-                "prayer_count": counts.get(r.id, 0), "created_at": r.created_at.isoformat()}
+                "prayer_count": counts.get(r.id, 0), "created_at": r.created_at.isoformat(),
+                "created_by": r.created_by, "prayed_today": r.id in prayed_ids,
+                "verse": {"reference": v.reference, "text": v.text,
+                          "translation": v.translation} if v else None}
 
     families = (await db.execute(select(m.Family).where(
         m.Family.group_id == gid, m.Family.deleted_at.is_(None))

@@ -4,7 +4,24 @@
    active request card carries a lit-wick glow on its left edge.
    Mobile-first: base styles target 360px; min-width queries only. */
 
+/* self-hosted variable fonts (latin) — no third-party requests, works offline */
+@font-face {
+  font-family: "Fraunces";
+  src: url("/fonts/fraunces-latin.woff2") format("woff2");
+  font-weight: 400 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Albert Sans";
+  src: url("/fonts/albert-sans-latin.woff2") format("woff2");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
+  color-scheme: dark; /* native form controls, scrollbars, autofill match the theme */
   --night: #171b33;
   --panel: #20264a;
   --panel-2: #262d56;
@@ -28,22 +45,40 @@ body {
 }
 
 h1, h2, h3, h4, .brand { font-family: "Fraunces", Georgia, serif; font-weight: 600; }
-button { font: inherit; cursor: pointer; }
+button { font: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+
+/* touch feedback — hover doesn't exist on phones, presses should */
+.primary:active, .pray-btn:active, .picker-card:active, .mini:active, .tabs button:active {
+  transform: scale(0.97);
+  transition: transform 80ms ease;
+}
 
 /* ------------------------------- shell ------------------------------- */
 
 .shell { display: flex; flex-direction: column; min-height: 100dvh; }
 .topbar {
   display: flex; align-items: baseline; gap: 12px;
-  padding: calc(env(safe-area-inset-top, 0px) + 14px) 18px 12px;
+  padding: calc(env(safe-area-inset-top, 0px) + 14px)
+           calc(env(safe-area-inset-right, 0px) + 18px)
+           12px
+           calc(env(safe-area-inset-left, 0px) + 18px);
   border-bottom: 1px solid var(--panel-2);
 }
 .brand { color: var(--candle); font-size: 1.15rem; letter-spacing: 0.01em; }
-.group-name { color: var(--slate); font-size: 0.9rem; }
+.group-name { color: var(--slate); font-size: 0.9rem; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gear {
+  align-self: center; background: none; border: none; color: var(--slate);
+  font-size: 1.25rem; min-width: 44px; min-height: 44px; margin: -10px -10px -10px 0;
+}
+.gear[aria-current] { color: var(--candle); }
+.gear:focus-visible { outline: 2px solid var(--candle); outline-offset: 2px; }
 
 .content {
   flex: 1;
-  padding: 16px 16px calc(84px + env(safe-area-inset-bottom, 0px));
+  padding: 16px
+           calc(env(safe-area-inset-right, 0px) + 16px)
+           calc(84px + env(safe-area-inset-bottom, 0px))
+           calc(env(safe-area-inset-left, 0px) + 16px);
   max-width: 640px; width: 100%; margin: 0 auto;
 }
 
@@ -179,7 +214,73 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--candle); bo
 .picker-card.sel { border-color: var(--candle); box-shadow: 0 0 0 1px var(--candle) inset; }
 
 .hint { color: var(--slate); text-align: center; margin-top: 32px; }
+.hint.small { margin: 8px 0; font-size: 0.85rem; text-align: left; }
 .error { color: var(--error); margin: 0; }
+
+/* ------------------------- widgets: toast / skeleton ------------------------- */
+
+.toast {
+  position: fixed; left: 50%; transform: translate(-50%, 12px);
+  bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+  max-width: min(92vw, 480px);
+  background: var(--panel-2); color: var(--parchment);
+  border: 1px solid color-mix(in srgb, var(--candle) 40%, transparent);
+  border-radius: 999px; padding: 10px 18px; font-size: 0.9rem;
+  opacity: 0; pointer-events: none; transition: opacity 200ms ease, transform 200ms ease;
+  z-index: 10;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+.card.skeleton::before { display: none; }
+.sk-line {
+  height: 12px; border-radius: 6px; margin: 10px 0;
+  background: linear-gradient(90deg, var(--panel-2) 25%, color-mix(in srgb, var(--panel-2) 60%, var(--panel)) 50%, var(--panel-2) 75%);
+  background-size: 200% 100%;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .sk-line { animation: shimmer 1.4s linear infinite; }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+}
+.sk-line.w40 { width: 40%; } .sk-line.w60 { width: 60%; } .sk-line.w90 { width: 90%; }
+
+.load-error { text-align: center; margin-top: 32px; display: flex; flex-direction: column; gap: 12px; align-items: center; }
+
+/* ------------------------- card tools / updates thread ------------------------- */
+
+.card-tools { margin-left: auto; display: flex; gap: 4px; }
+.link.small { font-size: 0.85rem; text-decoration: none; color: var(--slate); padding: 8px; }
+.link.small.deny { color: var(--error); }
+.updates { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--panel-2); }
+.update { margin: 6px 0; font-size: 0.92rem; }
+.update-meta { display: block; color: var(--slate); font-size: 0.78rem; }
+.update-form { display: flex; gap: 8px; margin-top: 10px; }
+.update-form input { flex: 1; min-height: 40px; padding: 8px 12px; }
+
+/* ------------------------------- settings ------------------------------- */
+
+.settings-section { margin-bottom: 28px; }
+.settings-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+.settings-invite { font-size: 0.85rem; word-break: break-all; margin: 6px 0; }
+.settings-invite a { color: var(--candle); }
+.settings-account { margin: 6px 0 12px; }
+.settings-sub { margin: 18px 0 6px; font-size: 1rem; }
+.mini, .btn-like {
+  min-height: 40px; padding: 6px 16px; border-radius: 999px;
+  border: 1px solid var(--candle); background: none; color: var(--candle);
+  font-size: 0.9rem; font-weight: 600; text-decoration: none;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.mini.deny { border-color: var(--error); color: var(--error); }
+.mini:disabled { opacity: 0.45; cursor: not-allowed; }
+.mini:focus-visible, .btn-like:focus-visible { outline: 2px solid var(--candle); outline-offset: 2px; }
+.queue { list-style: none; margin: 0; padding: 0; }
+.queue-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--panel-2); }
+.queue-who { min-width: 0; }
+.queue-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.audit { list-style: none; margin: 8px 0 0; padding: 0; font-size: 0.85rem; }
+.audit li { padding: 6px 0; border-bottom: 1px solid var(--panel-2); }
+.audit-action { color: var(--parchment); }
+.audit-when { display: block; color: var(--slate); font-size: 0.75rem; }
 
 /* ------------------------ larger screens (enhance) ------------------------ */
 

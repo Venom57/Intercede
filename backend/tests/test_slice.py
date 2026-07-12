@@ -47,11 +47,19 @@ async def test_golden_path_hierarchy_request_verse_prayed_answered(client):
     assert fam_section["members"][0]["requests"][0]["title"] == "Emma's entrance exams"
     assert wall["urgent"][0]["title"] == "Move to Ohio"
 
+    # wall requests carry enrichment: verse, prayed_today, created_by
+    emma_req = fam_section["members"][0]["requests"][0]
+    assert emma_req["verse"] is not None and emma_req["verse"]["reference"]
+    assert emma_req["prayed_today"] is False
+    assert emma_req["created_by"]
+
     # prayed idempotency (same user, same day)
     p1 = (await client.post(f"/api/requests/{rid}/prayed", cookies=leader)).json()
     p2 = (await client.post(f"/api/requests/{rid}/prayed", cookies=leader)).json()
     assert p1["newly_recorded"] is True and p2["newly_recorded"] is False
     assert p2["total_prayers"] == 1
+    wall_after = (await client.get(f"/api/groups/{g['id']}/wall", cookies=leader)).json()
+    assert wall_after["families"][0]["members"][0]["requests"][0]["prayed_today"] is True
 
     # answered → praise wall
     pr = await client.patch(f"/api/requests/{rid}", cookies=leader,
