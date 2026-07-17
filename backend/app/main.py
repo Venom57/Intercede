@@ -9,7 +9,7 @@ from fastapi import FastAPI
 
 from .deps import SessionLocal, engine
 from .models import Base
-from .routes import router
+from .routers import admin, auth, groups, join, requests
 from .security import security_headers_middleware
 from .verses import seed_verses
 
@@ -25,7 +25,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Intercede", lifespan=lifespan)
 app.middleware("http")(security_headers_middleware)
-app.include_router(router)
+for feature_router in (auth.router, groups.router, requests.router, join.router, admin.router):
+    app.include_router(feature_router)
 
 
 @app.get("/api/health")

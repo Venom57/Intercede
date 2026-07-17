@@ -5,8 +5,9 @@ client-side. Every group-scoped endpoint resolves an *active* membership first.
 """
 from __future__ import annotations
 
+import asyncio
 import os
-from datetime import date
+from datetime import UTC, date, datetime
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
@@ -53,8 +54,10 @@ def verify_password(pw: str, pw_hash: str) -> bool:
 DUMMY_HASH = PasswordHasher().hash("timing-parity-dummy")
 
 
-def set_session_cookie(response: Response, user_id: str) -> None:
-    token = signer.dumps(user_id)
+def set_session_cookie(response: Response, user: m.User) -> None:
+    # the epoch rides in the token so bumping User.session_epoch revokes
+    # every session issued before the bump
+    token = signer.dumps([user.id, user.session_epoch])
     response.set_cookie(
         COOKIE_NAME, token, max_age=SESSION_MAX_AGE,
         httponly=True, samesite="lax",
@@ -73,23 +76,47 @@ async def current_user(
     if not intercede_session:
         raise HTTPException(401, "Not signed in")
     try:
-        user_id = signer.loads(intercede_session, max_age=SESSION_MAX_AGE)
-    except (BadSignature, SignatureExpired):
+        user_id, epoch = signer.loads(intercede_session, max_age=SESSION_MAX_AGE)
+    except (BadSignature, SignatureExpired, ValueError, TypeError):
         raise HTTPException(401, "Session invalid or expired") from None
     user = await db.get(m.User, user_id)
-    if not user:
+    if not user or user.session_epoch != epoch:
         raise HTTPException(401, "Session invalid")
     return user
+
+
+# serializes account creation so two concurrent first registrations can't both
+# pass the count==0 check and both become site admin. Per-process, which is
+# fine: registration is rate-limited anyway, and the race only exists during
+# first boot. Multi-process deployments should create the first account before
+# opening the app to traffic.
+first_user_lock = asyncio.Lock()
 
 
 async def bootstrap_site_admin(db: AsyncSession, user: m.User) -> None:
     """First account ever created administers the site (self-host bootstrap).
 
-    Call before db.add(user) so the count query doesn't autoflush the new row.
+    Call before db.add(user) so the count query doesn't autoflush the new row,
+    and only while holding first_user_lock through the commit.
     """
     count = (await db.execute(select(func.count()).select_from(m.User))).scalar_one()
     if count == 0:
         user.is_site_admin = True
+
+
+async def cookie_user(
+    db: AsyncSession = Depends(get_db),
+    intercede_session: str | None = Cookie(default=None),
+) -> m.User | None:
+    """Best-effort resolution for logout: valid signature required, epoch ignored
+    so signing out is idempotent even with an already-revoked cookie."""
+    if not intercede_session:
+        return None
+    try:
+        user_id, _epoch = signer.loads(intercede_session, max_age=SESSION_MAX_AGE)
+    except (BadSignature, SignatureExpired, ValueError, TypeError):
+        return None
+    return await db.get(m.User, user_id)
 
 
 async def require_site_admin(user: m.User = Depends(current_user)) -> m.User:
@@ -119,6 +146,8 @@ def visible_request_filter(ms: m.GroupMembership):
     """SQL predicate for which requests this membership may see.
 
     - leaders see everything in their group
+    - authors always see their own requests (a leaders_only request must not
+      vanish from the person who posted it)
     - privacy='group' visible to all active members
     - privacy='family_only' visible only if the request's subject family is
       the viewer's family (family subject: subject_id; member subject: the
@@ -143,9 +172,13 @@ def visible_request_filter(ms: m.GroupMembership):
     )
     return and_(
         m.PrayerRequest.group_id == ms.group_id,
-        or_(m.PrayerRequest.privacy == "group", family_only_visible),
+        or_(m.PrayerRequest.privacy == "group",
+            m.PrayerRequest.created_by == ms.user_id,
+            family_only_visible),
     )
 
 
 def today() -> date:
-    return date.today()
+    # UTC everywhere: the "prayed today" idempotency boundary must not drift
+    # with the server's local timezone (timestamps are already stored UTC)
+    return datetime.now(UTC).date()

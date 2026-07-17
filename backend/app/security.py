@@ -24,11 +24,18 @@ RATE_MAX_ATTEMPTS = int(os.environ.get("RATE_MAX_ATTEMPTS", "10"))
 _attempts: dict[tuple[str, str], deque[float]] = defaultdict(deque)
 
 
+# X-Forwarded-For is client-supplied unless a proxy you control overwrites or
+# appends to it. Only honor it when TRUST_PROXY=1 (i.e. the app is deployed
+# behind such a proxy), and take the LAST entry — the one your proxy appended —
+# so a spoofed client-sent prefix can't bypass rate limiting.
+TRUST_PROXY = os.environ.get("TRUST_PROXY", "0") == "1"
+
+
 def client_ip(request: Request) -> str:
-    # trust the first hop only; a fronting proxy should set X-Forwarded-For
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    if TRUST_PROXY:
+        fwd = request.headers.get("x-forwarded-for")
+        if fwd:
+            return fwd.rsplit(",", 1)[-1].strip()
     return request.client.host if request.client else "unknown"
 
 
@@ -72,7 +79,7 @@ AUDIT_ACTIONS = (
     "auth.register", "auth.login", "auth.login_failed",
     "join.requested", "join.approved", "join.denied",
     "invite.rotated", "request.status_changed", "request.deleted",
-    "family.deleted", "member.deleted",
+    "family.deleted", "member.deleted", "member_removed",
     "role_changed", "site_admin_granted", "site_admin_revoked",
 )
 

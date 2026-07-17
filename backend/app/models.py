@@ -40,6 +40,9 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     display_name: Mapped[str] = mapped_column(String(120))
     is_site_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # embedded in the session cookie; bumping it invalidates every outstanding
+    # session for this user (logout, future password change)
+    session_epoch: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -68,6 +71,10 @@ class GroupMembership(Base):
     role: Mapped[str] = mapped_column(String(16), default="member")
     status: Mapped[str] = mapped_column(String(16), default="active")
     family_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("families.id"), nullable=True)
+    # a pending join that asked to START a family carries only the name here;
+    # the Family/Member rows are created at approval so a pending (or denied)
+    # join never appears on the wall and leaves nothing behind
+    pending_family_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

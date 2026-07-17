@@ -77,14 +77,15 @@ async def test_member_role_cannot_use_leader_endpoints(client):
 async def test_pending_member_blocked_from_writes(client):
     leader = await register(client, "lead@example.com")
     g = await make_group(client, leader, approval_required=True)
+    fam = (await client.post(f"/api/groups/{g['id']}/families",
+                             json={"family_name": "The Smiths"}, cookies=leader)).json()
     j = await client.post(f"/api/join/{g['invite_code']}", json={
         "display_name": "P", "email": "pending@example.com",
         "password": "sufficiently-long", "new_family_name": "Pendings"})
     pending = cookies_of(j)
 
-    fams = (await client.get(f"/api/join/{g['invite_code']}")).json()["families"]
     r = await client.post(f"/api/groups/{g['id']}/requests", cookies=pending, json={
-        "subject_type": "family", "subject_id": fams[0]["id"],
+        "subject_type": "family", "subject_id": fam["id"],
         "title": "Should be blocked", "category_slug": "general"})
     assert r.status_code == 403
     assert (await client.post(f"/api/groups/{g['id']}/families",

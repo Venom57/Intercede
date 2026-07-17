@@ -26,7 +26,10 @@ function JoinQueue({ gid }: { gid: string }) {
     <ul className="queue">
       {queue.map(e => (
         <li key={e.membership_id} className="queue-row">
-          <span className="queue-who">{e.display_name} <span className="rel">{e.email}</span></span>
+          <span className="queue-who">
+            {e.display_name} <span className="rel">{e.email}</span>
+            {e.family && <span className="rel"> · {e.family}</span>}
+          </span>
           <span className="queue-actions">
             <button className="mini" onClick={() => decide(e.membership_id, true)}>Approve</button>
             <button className="mini deny" onClick={() => decide(e.membership_id, false)}>Deny</button>
@@ -54,6 +57,7 @@ function AuditTrail({ gid }: { gid: string }) {
           {entries.slice(0, 20).map(a => (
             <li key={a.id}>
               <span className="audit-action">{a.action}</span>
+              {a.actor && <span className="rel"> · {a.actor}</span>}
               {a.detail && <span className="rel"> · {a.detail}</span>}
               <span className="audit-when">{new Date(a.created_at).toLocaleString()}</span>
             </li>

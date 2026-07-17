@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { AdminView } from "./Admin";
 import { api, flushPrayQueue, recordPrayed, toast, TOAST_EVENT, UNAUTHED_EVENT } from "./api";
 import { AuthView, JoinWizard } from "./Onboard";
@@ -125,13 +125,76 @@ function UpdatesThread({ req, canPost }: { req: Req; canPost: boolean }) {
         </p>
       ))}
       {canPost && (
-        <div className="update-form">
-          <input value={draft} onChange={e => setDraft(e.target.value)} maxLength={4000}
-                 placeholder="Share an update…" aria-label="New update" />
-          <button className="mini" disabled={!draft.trim()} onClick={post}>Post</button>
-        </div>
+        <form className="update-form" onSubmit={e => { e.preventDefault(); post(); }}>
+          <textarea value={draft} onChange={e => setDraft(e.target.value)} maxLength={4000} rows={1}
+                    placeholder="Share an update…" aria-label="New update" />
+          <button className="mini" disabled={!draft.trim()} type="submit">Post</button>
+        </form>
       )}
     </div>
+  );
+}
+
+function AnswerForm({ req, onDone }: { req: Req; onDone: () => void }) {
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api(`/api/requests/${req.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: "answered", ...(note.trim() ? { answer_note: note.trim() } : {}) }),
+      });
+      toast("Answered — moved to the praise wall");
+      onDone();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Could not update");
+      setBusy(false);
+    }
+  };
+  return (
+    <form className="card-subform" onSubmit={submit}>
+      <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} maxLength={4000}
+                placeholder="How was it answered? (optional)" aria-label="Answer note" />
+      <button className="mini gold" disabled={busy} type="submit">Move to praise wall</button>
+    </form>
+  );
+}
+
+function EditForm({ req, onSaved, onCancel }: { req: Req; onSaved: () => void; onCancel: () => void }) {
+  const [title, setTitle] = useState(req.title);
+  const [body, setBody] = useState(req.body);
+  const [urgent, setUrgent] = useState(req.is_urgent);
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api(`/api/requests/${req.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title: title.trim(), body, is_urgent: urgent }),
+      });
+      toast("Request updated");
+      onSaved();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Could not save");
+      setBusy(false);
+    }
+  };
+  return (
+    <form className="card-subform" onSubmit={submit}>
+      <input value={title} onChange={e => setTitle(e.target.value)} maxLength={120} aria-label="Title" />
+      <textarea value={body} onChange={e => setBody(e.target.value)} rows={3} maxLength={4000}
+                placeholder="Details (optional)" aria-label="Details" />
+      <label className="row">
+        <input type="checkbox" checked={urgent} onChange={e => setUrgent(e.target.checked)} /> Urgent
+      </label>
+      <div className="settings-row">
+        <button className="mini" disabled={busy || !title.trim()} type="submit">Save</button>
+        <button className="mini deny" type="button" onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
   );
 }
 
@@ -141,7 +204,8 @@ function RequestCard({ req, meId, role, onRemoved }: {
   const [prayed, setPrayed] = useState(req.prayed_today);
   const [count, setCount] = useState(req.prayer_count);
   const [showUpdates, setShowUpdates] = useState(false);
-  const canEdit = req.created_by === meId || role === "leader";
+  const [pane, setPane] = useState<"none" | "edit" | "answer">("none");
+  const canEdit = req.created_by === meId || role === "leader" || role === "steward";
 
   const pray = async () => {
     if (prayed) return;
@@ -170,10 +234,14 @@ function RequestCard({ req, meId, role, onRemoved }: {
     }
   };
 
+  const privacyLabel = req.privacy === "family_only" ? "family only"
+    : req.privacy === "leaders_only" ? "leaders only" : null;
+
   return (
     <article className={`card ${req.is_urgent ? "urgent" : ""}`}>
       <div className="card-head">
         <h4>{req.title}</h4>
+        {privacyLabel && <span className="chip">{privacyLabel}</span>}
         {req.is_urgent && <span className="flame" aria-label="urgent">urgent</span>}
       </div>
       {req.body && <p className="card-body">{req.body}</p>}
@@ -192,9 +260,23 @@ function RequestCard({ req, meId, role, onRemoved }: {
           <button className="link small" aria-expanded={showUpdates} onClick={() => setShowUpdates(!showUpdates)}>
             Updates
           </button>
-          {canEdit && <button className="link small deny" onClick={remove}>Remove</button>}
+          {canEdit && (
+            <button className="link small" aria-expanded={pane === "edit"}
+              onClick={() => setPane(pane === "edit" ? "none" : "edit")}>Edit</button>
+          )}
+          {canEdit && (
+            <button className="link small gold" aria-expanded={pane === "answer"}
+              onClick={() => setPane(pane === "answer" ? "none" : "answer")}>Answered</button>
+          )}
         </span>
       </div>
+      {pane === "edit" && (
+        <>
+          <EditForm req={req} onSaved={onRemoved} onCancel={() => setPane("none")} />
+          <button className="link small deny" onClick={remove}>Remove from the wall</button>
+        </>
+      )}
+      {pane === "answer" && <AnswerForm req={req} onDone={onRemoved} />}
       {showUpdates && <UpdatesThread req={req} canPost={canEdit} />}
     </article>
   );
@@ -252,13 +334,16 @@ function SessionView({ gid }: { gid: string }) {
       ...wall.families.flatMap(f => [...f.requests, ...f.members.flatMap(m => m.requests)]),
     ];
     const seen = new Set<string>();
-    return all.filter(r => !seen.has(r.id) && seen.add(r.id));
+    const uniq = all.filter(r => !seen.has(r.id) && seen.add(r.id));
+    // requests not yet prayed for today come first
+    return [...uniq.filter(r => !r.prayed_today), ...uniq.filter(r => r.prayed_today)];
   }, [wall]);
   if (err && !wall) return <ErrorRetry msg={err} onRetry={reload} />;
   if (!queue) return <SkeletonCards n={1} />;
   const cur = queue[i];
   if (!cur) return <p className="hint session-done">You have prayed through every request. Amen.</p>;
   const advance = () => {
+    if (!cur.prayed_today) patchCachedPrayed(cur.id, 1); // keep the Wall tab in sync
     recordPrayed(cur.id).catch(() => { /* best effort inside the flow */ });
     setI(i + 1);
   };
@@ -356,8 +441,8 @@ function NewRequestView({ gid, onDone }: { gid: string; onDone: () => void }) {
     }
   };
   return (
-    <div className="form">
-      <p className="hint">For <strong>{subject.label}</strong> · <button className="link" onClick={() => setSubject(null)}>change</button></p>
+    <form className="form" onSubmit={e => { e.preventDefault(); submit(); }}>
+      <p className="hint">For <strong>{subject.label}</strong> · <button className="link" type="button" onClick={() => setSubject(null)}>change</button></p>
       <label>Title
         <input value={title} onChange={e => setTitle(e.target.value)} maxLength={120} placeholder="What should we pray for?" />
       </label>
@@ -380,8 +465,8 @@ function NewRequestView({ gid, onDone }: { gid: string; onDone: () => void }) {
         <input type="checkbox" checked={urgent} onChange={e => setUrgent(e.target.checked)} /> Urgent
       </label>
       {err && <p className="error" role="alert">{err}</p>}
-      <button className="primary" disabled={!title.trim()} onClick={submit}>Add request</button>
-    </div>
+      <button className="primary" disabled={!title.trim()} type="submit">Add request</button>
+    </form>
   );
 }
 
@@ -403,7 +488,8 @@ export default function App() {
   const loadGroups = useCallback(() => {
     api<GroupT[]>("/api/groups").then(gs => {
       setGroups(gs);
-      setGid(g => (g && gs.some(x => x.id === g)) ? g : (gs[0]?.id ?? null));
+      const active = gs.filter(g => g.status === "active");
+      setGid(g => (g && active.some(x => x.id === g)) ? g : (active[0]?.id ?? null));
     }).catch(() => setGroups([]));
   }, []);
 
@@ -429,27 +515,49 @@ export default function App() {
 
   useEffect(() => { if (gid) localStorage.setItem(GID_KEY, gid); }, [gid]);
 
+  const signOut = async () => {
+    try { await api("/api/auth/logout", { method: "POST" }); } catch { /* cookie may already be gone */ }
+    setMe(null); setGroups(null); wallCache.clear();
+  };
+
   if (joinCode) return <><JoinWizard code={joinCode} /><Toaster /></>;
   if (me === undefined) return <SkeletonCards />;
   if (!me) return <><AuthView onAuthed={onAuthed} /><Toaster /></>;
   if (!groups) return <SkeletonCards />;
-  if (groups.length === 0) {
+  const activeGroups = groups.filter(g => g.status === "active");
+  const pendingGroups = groups.filter(g => g.status === "pending");
+  if (activeGroups.length === 0 && pendingGroups.length > 0) {
     return (
       <div className="join">
         <h1 className="join-title brand">Intercede</h1>
-        <p className="join-lede">You are not in a group yet. Scan your group's QR poster to join, or start a new group.</p>
-        <div className="form">
-          <label>Group name<input value={newGroupName} onChange={e => setNewGroupName(e.target.value)} placeholder="Tuesday Night Study" /></label>
-          <button className="primary" disabled={!newGroupName.trim()}
-            onClick={() => api("/api/groups", { method: "POST", body: JSON.stringify({ name: newGroupName }) }).then(loadGroups)}>
-            Create group
-          </button>
-        </div>
+        <p className="join-lede">
+          Your request to join <strong>{pendingGroups[0].name}</strong> is waiting for the
+          leader's approval. You'll be let in as soon as they see it.
+        </p>
+        <button className="primary" onClick={loadGroups}>Check again</button>
+        <button className="link" onClick={signOut}>Sign out</button>
         <Toaster />
       </div>
     );
   }
-  const group = groups.find(g => g.id === gid) ?? groups[0];
+  if (activeGroups.length === 0) {
+    return (
+      <div className="join">
+        <h1 className="join-title brand">Intercede</h1>
+        <p className="join-lede">You are not in a group yet. Scan your group's QR poster to join, or start a new group.</p>
+        <form className="form" onSubmit={e => {
+          e.preventDefault();
+          api("/api/groups", { method: "POST", body: JSON.stringify({ name: newGroupName }) }).then(loadGroups);
+        }}>
+          <label>Group name<input value={newGroupName} onChange={e => setNewGroupName(e.target.value)} placeholder="Tuesday Night Study" /></label>
+          <button className="primary" disabled={!newGroupName.trim()} type="submit">Create group</button>
+        </form>
+        <button className="link" onClick={signOut}>Sign out</button>
+        <Toaster />
+      </div>
+    );
+  }
+  const group = activeGroups.find(g => g.id === gid) ?? activeGroups[0];
   return (
     <div className="shell">
       <header className="topbar">
@@ -465,7 +573,7 @@ export default function App() {
         {tab === "praise" && <PraiseView key={`p${group.id}`} gid={group.id} />}
         {tab === "add" && <NewRequestView key={`a${group.id}`} gid={group.id} onDone={() => setTab("wall")} />}
         {tab === "settings" && (
-          <SettingsView me={me} groups={groups} gid={group.id}
+          <SettingsView me={me} groups={activeGroups} gid={group.id}
             onSwitch={id => { setGid(id); setTab("wall"); }}
             onLoggedOut={() => { setMe(null); setGroups(null); wallCache.clear(); }}
             reloadGroups={loadGroups}

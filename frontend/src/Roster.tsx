@@ -29,6 +29,20 @@ export function MembersRoster({ base, meId }: { base: string; meId: string }) {
     }
   };
 
+  const remove = async (row: MemberRow) => {
+    if (!window.confirm(`Remove ${row.display_name} from the group? Their prayer entries will be retired.`)) return;
+    setBusyId(row.user_id);
+    try {
+      await api(`${base}/members/${row.user_id}`, { method: "DELETE" });
+      toast(`${row.display_name} removed`);
+      load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not remove");
+    } finally {
+      setBusyId("");
+    }
+  };
+
   if (err) return <p className="error">{err}</p>;
   if (!rows) return <p className="hint small">Loading members…</p>;
   if (rows.length === 0) return <p className="hint small">No members yet.</p>;
@@ -48,6 +62,9 @@ export function MembersRoster({ base, meId }: { base: string; meId: string }) {
               {r.role === "leader"
                 ? <button className="mini deny" disabled={busyId === r.user_id} onClick={() => setRole(r, "member")}>Remove admin</button>
                 : <button className="mini" disabled={busyId === r.user_id} onClick={() => setRole(r, "leader")}>Make admin</button>}
+              {r.user_id !== meId && (
+                <button className="mini deny" disabled={busyId === r.user_id} onClick={() => remove(r)}>Remove</button>
+              )}
             </span>
           )}
         </li>

@@ -36,8 +36,10 @@ async def test_golden_path_hierarchy_request_verse_prayed_answered(client):
     # verse mapping + rotation
     v1 = (await client.get(f"/api/requests/{rid}/verse", cookies=leader)).json()
     assert v1["translation"] == "KJV" and "Philippians" in v1["reference"]
-    v2 = (await client.get(f"/api/requests/{rid}/verse?shuffle=true", cookies=leader)).json()
+    v2 = (await client.post(f"/api/requests/{rid}/verse/shuffle", cookies=leader)).json()
     assert v2["reference"] != v1["reference"]
+    # plain GET does not rotate
+    assert (await client.get(f"/api/requests/{rid}/verse", cookies=leader)).json() == v2
 
     # wall rollup: family section contains both family- and member-level requests
     wall = (await client.get(f"/api/groups/{g['id']}/wall", cookies=leader)).json()
@@ -135,13 +137,19 @@ async def test_qr_join_approval_gate(client):
     assert j.status_code == 201 and j.json()["status"] == "pending"
     newbie = cookies_of(j)
 
-    # pending member is locked out of everything
+    # pending member is locked out of everything, but sees their pending state
     assert (await client.get(f"/api/groups/{g['id']}/wall", cookies=newbie)).status_code == 403
-    assert (await client.get("/api/groups", cookies=newbie)).json() == []
+    groups = (await client.get("/api/groups", cookies=newbie)).json()
+    assert [g2["status"] for g2 in groups] == ["pending"]
+
+    # family/member rows are deferred: nothing appears on the wall pre-approval
+    wall_before = (await client.get(f"/api/groups/{g['id']}/wall", cookies=leader)).json()
+    assert wall_before["families"] == []
 
     # leader approves from the queue
     queue = (await client.get(f"/api/groups/{g['id']}/join-queue", cookies=leader)).json()
     assert queue[0]["email"] == "new@example.com"
+    assert "Newcomers" in queue[0]["family"]
     ok = await client.patch(f"/api/join-queue/{queue[0]['membership_id']}",
                             json={"approve": True}, cookies=leader)
     assert ok.json()["status"] == "active"
