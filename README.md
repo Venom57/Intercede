@@ -96,6 +96,29 @@ Tests:
     color-scheme for native controls, press states, ARIA live regions,
     safe-area padding on all four edges
 
+## Deploy (Docker Compose + Cloudflare Tunnel)
+
+The compose file ships the whole stack: Postgres, the API, nginx serving the
+built PWA (proxying `/api`), and a `cloudflared` connector. The tunnel is the
+only ingress — no router ports to open, TLS terminates at Cloudflare's edge.
+
+1. In the Cloudflare dashboard: **Zero Trust → Networks → Tunnels → Create a
+   tunnel** (Cloudflared connector). Copy the token out of the `docker run`
+   snippet it shows.
+2. Add a **Public Hostname** to the tunnel: your domain (e.g.
+   `prayer.example.com`) → service `HTTP` → URL `web:80`.
+3. On the host: `cp .env.example .env` and fill in `SECRET_KEY` (the file
+   shows the generator one-liner), `POSTGRES_PASSWORD`, `PUBLIC_BASE_URL`
+   (your public URL — it's what the QR posters encode), and `TUNNEL_TOKEN`.
+4. `docker compose up -d --build`
+5. Open your domain and register — the **first account becomes site admin**,
+   so do this before sharing any join links.
+
+`web` also publishes `:8080` for LAN smoke-testing; remove that `ports:`
+line if the tunnel should be the only way in. The visitor-IP chain for rate
+limiting (Cloudflare `CF-Connecting-IP` → nginx `X-Forwarded-For` → API with
+`TRUST_PROXY=1`) is wired up in `frontend/nginx.conf` and the compose env.
+
 ## CI/CD
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR:
@@ -120,5 +143,3 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR:
 - Magic-link auth, MFA, CAPTCHA on join
 - Notifications/digests, PDF prayer sheet export
 - Verse seed texts entered by hand — proofread against a printed KJV
-- Production static hosting for the frontend (nginx serving dist/ and
-  proxying /api — compose currently ships the API only)

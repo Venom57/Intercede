@@ -1,20 +1,50 @@
+# Full production stack: Postgres + API + nginx-served frontend + Cloudflare
+# Tunnel. Copy .env.example to .env and fill it in, then: docker compose up -d
+#
+# The tunnel is the only ingress — no ports need forwarding on your router.
+# web publishes 8080 for LAN access/smoke-testing; remove it if you want the
+# tunnel to be the only way in.
 services:
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: intercede
       POSTGRES_USER: intercede
-      POSTGRES_PASSWORD: change-me
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
     volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U intercede"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   api:
     build: ./backend
+    restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://intercede:change-me@db/intercede
-      SECRET_KEY: change-me-long-random
+      DATABASE_URL: postgresql+asyncpg://intercede:${POSTGRES_PASSWORD:?set in .env}@db/intercede
+      SECRET_KEY: ${SECRET_KEY:?set in .env}
       APP_ENV: production    # refuses to boot on the dev-default SECRET_KEY
       COOKIE_SECURE: "1"
-      PUBLIC_BASE_URL: https://prayer.example.com
-    depends_on: [db]
-    ports: ["8000:8000"]
+      TRUST_PROXY: "1"       # nginx forwards the Cloudflare visitor IP
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set in .env}
+    depends_on:
+      db: { condition: service_healthy }
+
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on: [api]
+    ports: ["8080:80"]
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set in .env}
+    depends_on: [web]
+
 volumes:
   pgdata:
