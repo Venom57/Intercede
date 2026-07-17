@@ -32,9 +32,13 @@ export function AuthView({ onAuthed }: { onAuthed: () => void }) {
       <form className="form" onSubmit={e => { e.preventDefault(); go(); }}>
         {mode === "register" && <label>Your name<input autoComplete="name" value={name} onChange={e => setName(e.target.value)} /></label>}
         <label>Email<input type="email" inputMode="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} /></label>
-        <label>Password<input type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} value={pw} onChange={e => setPw(e.target.value)} /></label>
+        <label>Password<input type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} value={pw} onChange={e => setPw(e.target.value)}
+          placeholder={mode === "register" ? "8+ characters" : undefined} /></label>
         {err && <p className="error" role="alert">{err}</p>}
-        <button className="primary" disabled={busy} type="submit">{mode === "login" ? "Sign in" : "Create account"}</button>
+        <button className="primary" type="submit"
+          disabled={busy || !email || (mode === "register" && (!name.trim() || pw.length < 8))}>
+          {mode === "login" ? "Sign in" : "Create account"}
+        </button>
         <button className="link" type="button" onClick={() => { setErr(""); setMode(mode === "login" ? "register" : "login"); }}>
           {mode === "login" ? "New here? Create an account" : "Have an account? Sign in"}
         </button>

@@ -392,6 +392,63 @@ function PraiseView({ gid }: { gid: string }) {
 
 /* -------------------------------- new request ----------------------------- */
 
+function NewFamilyForm({ gid, onCreated }: { gid: string; onCreated: () => void }) {
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api(`/api/groups/${gid}/families`, { method: "POST", body: JSON.stringify({ family_name: name.trim() }) });
+      toast(`${name.trim()} added`);
+      setName("");
+      onCreated();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Could not add family");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form className="form picker-new-family" onSubmit={submit}>
+      <label>Start a new family
+        <input value={name} onChange={e => setName(e.target.value)} maxLength={120} placeholder="e.g. The Andersons" />
+      </label>
+      <button className="mini" disabled={busy || !name.trim()} type="submit">Add family</button>
+    </form>
+  );
+}
+
+function AddPersonForm({ familyId, onAdded }: { familyId: string; onAdded: () => void }) {
+  const [name, setName] = useState("");
+  const [rel, setRel] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api(`/api/families/${familyId}/members`, {
+        method: "POST",
+        body: JSON.stringify({ display_name: name.trim(), relationship_label: rel.trim() || null }),
+      });
+      toast(`${name.trim()} added`);
+      onAdded();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Could not add person");
+      setBusy(false);
+    }
+  };
+  return (
+    <form className="form picker-new-family" onSubmit={submit}>
+      <label>Name<input value={name} onChange={e => setName(e.target.value)} maxLength={120} placeholder="e.g. Emma" /></label>
+      <label>Relationship (optional)
+        <input value={rel} onChange={e => setRel(e.target.value)} maxLength={60} placeholder="e.g. daughter, coworker" />
+      </label>
+      <button className="mini" disabled={busy || !name.trim()} type="submit">Add person</button>
+    </form>
+  );
+}
+
 function NewRequestView({ gid, onDone }: { gid: string; onDone: () => void }) {
   const { wall, err: loadErr, reload } = useWall(gid);
   const [subject, setSubject] = useState<{ type: "family" | "member"; id: string; label: string } | null>(null);
@@ -401,6 +458,7 @@ function NewRequestView({ gid, onDone }: { gid: string; onDone: () => void }) {
   const [urgent, setUrgent] = useState(false);
   const [privacy, setPrivacy] = useState("group");
   const [err, setErr] = useState("");
+  const [addingTo, setAddingTo] = useState<string | null>(null);
   if (loadErr && !wall) return <ErrorRetry msg={loadErr} onRetry={reload} />;
   if (!wall) return <SkeletonCards />;
   if (!subject) {
@@ -418,9 +476,19 @@ function NewRequestView({ gid, onDone }: { gid: string; onDone: () => void }) {
                 {m.display_name}{m.relationship_label && <span className="rel"> · {m.relationship_label}</span>}
               </button>
             ))}
+            <button className="link small" aria-expanded={addingTo === f.id}
+              onClick={() => setAddingTo(addingTo === f.id ? null : f.id)}>
+              + Add a person to {f.family_name}
+            </button>
+            {addingTo === f.id && (
+              <AddPersonForm familyId={f.id} onAdded={() => { setAddingTo(null); reload(); }} />
+            )}
           </div>
         ))}
-        {wall.families.length === 0 && <p className="hint">No families yet — ask your leader to add one, or create yours from the join link.</p>}
+        {wall.families.length === 0 && (
+          <p className="hint">No families yet — start with your own below. Each family holds the people you'll pray for.</p>
+        )}
+        <NewFamilyForm gid={gid} onCreated={reload} />
       </div>
     );
   }

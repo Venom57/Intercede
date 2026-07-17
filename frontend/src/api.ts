@@ -35,7 +35,16 @@ export async function api<T = unknown>(path: string, opts: RequestInit = {}): Pr
       window.dispatchEvent(new Event(UNAUTHED_EVENT));
     }
     const body = await res.json().catch(() => null);
-    const detail = body && typeof body.detail === "string" ? body.detail : res.statusText;
+    let detail = res.statusText;
+    if (body && typeof body.detail === "string") {
+      detail = body.detail;
+    } else if (body && Array.isArray(body.detail)) {
+      // FastAPI validation errors arrive as a list of {loc, msg} objects
+      const msgs = (body.detail as { loc?: (string | number)[]; msg?: string }[])
+        .map(d => (d.msg ? (d.loc?.length ? `${d.loc[d.loc.length - 1]}: ${d.msg}` : d.msg) : ""))
+        .filter(Boolean);
+      if (msgs.length) detail = msgs.join("; ");
+    }
     throw new ApiError(res.status, detail);
   }
   return res.json();

@@ -203,6 +203,11 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--candle); bo
 .link { background: none; border: none; color: var(--candle); text-decoration: underline; padding: 8px 0; }
 
 .picker-family { margin-bottom: 14px; }
+.picker-new-family {
+  margin-top: 18px; padding: 14px 16px;
+  background: var(--panel); border-radius: var(--radius);
+}
+.picker-new-family .mini { align-self: flex-start; }
 .picker-card {
   display: block; width: 100%; text-align: left;
   background: var(--panel); color: var(--parchment);
